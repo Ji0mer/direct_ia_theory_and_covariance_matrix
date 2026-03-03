@@ -1,0 +1,6 @@
+fits_data/
+nz_data/
+output/
+*.log
+.DS_Store
+__pycache__/
