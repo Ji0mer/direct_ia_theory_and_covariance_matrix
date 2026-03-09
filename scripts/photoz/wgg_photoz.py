@@ -1,325 +1,202 @@
 from __future__ import print_function
-from builtins import range
 from cosmosis.datablock import names, option_section
 import sys
 import numpy as np
-from scipy.interpolate import interp1d, interp2d
+from scipy.interpolate import interp1d, RectBivariateSpline
 from scipy.integrate import quad
 from hankl import FFTLog
 
 # constants
 clight = 299792.4580 # kms^-1
-sigmaz_a=0.2
-sigmaz_b=0.2
-alpha=1.719
 
 def setup(options):
-    sample_a = options.get_string(option_section, "sample_a", default="lens")
-    sample_b = options.get_string(option_section, "sample_b", default="lens")
-
-    include_magnification = options.get_bool(option_section, "include_magnification", default=True)
-
-    constant_sigmaz = options.get_bool(option_section, "constant_sigmaz", default=True)
-    if not constant_sigmaz: 
-        print('Using a linear approximation for sigma_z(z)')
-    else:
-        print('Using constant sigmaz=%2.2f'%sigmaz_a)
-
+    sample_a = options.get_string(option_section, "sample_a", default="forecast_sample_density")
+    sample_b = options.get_string(option_section, "sample_b", default="forecast_sample_density")
     timing = options.get_bool(option_section, "timing", default=True)
-
-    return (sample_a,sample_b,timing,include_magnification,constant_sigmaz)
+    constant_sigmaz = options.get_bool(option_section, "constant_sigmaz", default=True)
+    return sample_a, sample_b, timing, constant_sigmaz
 
 def execute(block, config):
-    sample_a, sample_b, timing, include_magnification, constant_sigmaz = config
-
+    sample_a, sample_b, timing, constant_sigmaz = config
+    
     if timing:
         from time import time
         T0 = time()
-
-    # binning for integrals
-    # choose a set of bins for line-of-sight separation 
-    Npi = 80
-    Nz0 = 50
-    Pi = np.linspace(-500,500,Npi)
-    z_low = np.linspace(0.01,3.00,Nz0)
-
-    z_distance = block['distances', 'z']
-    chi_distance = block['distances', 'd_m']*block['cosmological_parameters', 'h0']
-    a_distance = 1./(1+z_distance)
-    chi_of_z_spline = interp1d(z_distance, chi_distance)
-
-    zf = np.linspace(0.0,3.00,5000)
+    
+    # --- 1. Setup Grids ---
+    Npi = block['photoz_errors','N_pi']
+    Nz = 200
+    Pi = np.linspace(-block['photoz_errors','Pi_max'], block['photoz_errors','Pi_max'], Npi)
+    z_low = np.linspace(0.01, 4.00, Nz)
+    
+    z_distance = block["distances","z"]
+    chi_distance = block["distances","d_m"] * block['cosmological_parameters', 'h0']
+    chi_of_z_spline = interp1d(z_distance, chi_distance, bounds_error=False, fill_value="extrapolate")
+    
+    zf = np.linspace(0.0, 4.0, 400)
     chi = chi_of_z_spline(zf)
-
-    # if the redshift error has some z dependence, that gets set here
-    # otherwise sigmaz is a constant
+    
+    # --- 2. Photo-z parameters ---
     if not constant_sigmaz:
-        sigmaz_a = get_sigma_z(block, zf, sample_a)
-        sigmaz_b = get_sigma_z(block, zf, sample_b)
+        sigmaz_a = 0.01
+        sigmaz_b = 0.01
     else:
-        sigmaz_a=0.5
-        sigmaz_b=0.5
-
-    P_gg = block['galaxy_power','p_k']
+        sigmaz_a = block['photoz_errors','sigmaz']
+        sigmaz_b = block['photoz_errors','sigmaz']
+        
+    # --- 3. Power Spectrum Interpolation ---
+    # Apply bias terms
+    P_gg = block['galaxy_power','p_k'] * block["galaxy_power","blin_1"] * block["galaxy_power","blin_2"]
     k_power = block['galaxy_power','k_h']
     z_power = block['galaxy_power','z']
     chi_power = chi_of_z_spline(z_power)
-    P_gg_interpolator = interp2d(k_power,chi_power,P_gg)
+    
+    # Use RectBivariateSpline in Linear Space (Robust against zeros/negatives)
+    # Transpose P_gg to match (k, chi)
+    P_gg_spline = RectBivariateSpline(np.log(k_power), chi_power, P_gg.T)
 
     Nell = 300
-    ell = np.logspace(-6,np.log10(19000),Nell) 
-    Cell_all = np.zeros((Nz0, Npi, Nell))
-
-    P_gg_2d=[]
-    for i, l in enumerate(ell):
-        P1d = [P_gg_interpolator((l+0.5)/x, x) for x in chi]
-        P_gg_2d.append(P1d)
-    P_gg_2d = np.array(P_gg_2d)
-
-
-
-    if include_magnification:
-        P_mg = 2*(alpha-1)*block['matter_galaxy_power','p_k']
-        P_mg_interpolator = interp2d(k_power,chi_power,P_mg)
-
-        P_mm = 2*(alpha-1)*2*(alpha-1)*block['matter_power_nl','p_k']
-        P_mm_interpolator = interp2d(k_power,chi_power,P_mm)
-
-        P_mg_2d=[]
-        P_mm_2d=[]
-        for i, l in enumerate(ell):
-            P1d_mg = [P_mg_interpolator((l+0.5)/x, x) for x in chi]
-            P_mg_2d.append(P1d_mg)
-
-            P1d_mm = [P_mm_interpolator((l+0.5)/x, x) for x in chi]
-            P_mm_2d.append(P1d_mm)
-
-
-        P_mg_2d = np.array(P_mg_2d)
-        P_mm_2d = np.array(P_mm_2d)
-
-
-    # first bit: Limber integrals
+    ell = np.logspace(-6, np.log10(20000), Nell) 
+    
+    # Pre-compute P_gg_2d
+    chi_safe = chi.copy()
+    chi_safe[chi_safe == 0] = 1.0 
+    
+    ell_grid = ell[:, None]
+    k_eval = (ell_grid + 0.5) / chi_safe[None, :]
+    
+    # Evaluate spline
+    P_gg_2d_flat = P_gg_spline.ev(np.log(k_eval), np.tile(chi, (Nell, 1)))
+    P_gg_2d = P_gg_2d_flat.reshape(Nell, len(chi))
+    
     if timing:
         T1 = time()
-        print('Starting loop')
+        print('Setup done. Starting Super-Fast Integral...')
+        
+    # --- 4. Super-Fast Limber Integral ---
+    # Strategy: Integrate Kernel over Pi FIRST, then multiply P(k).
+    
+    # A. Geometry
+    Hz_all = 100 * np.sqrt(block['cosmological_parameters','omega_m']*(1+z_low)**3 + block['cosmological_parameters', 'omega_lambda'])
+    z1_grid = z_low[:, None] 
+    z2_grid = z_low[:, None] + (1./clight * Hz_all[:, None] * Pi[None, :]) 
+    
+    # B. Gaussian Weights (Nz, Npi, 400)
+    zf_b = zf[None, None, :]
+    
+    # Pz1
+    diff1 = zf_b - z1_grid[:, :, None]
+    Pz1_mat = gaussian_val(diff1, sigmaz_a)
+    norm1 = np.trapz(Pz1_mat, x=chi, axis=-1)
+    norm1[norm1 == 0] = 1.0
+    Pz1_mat /= norm1[:, :, None]
+    
+    # Pz2
+    diff2 = zf_b - z2_grid[:, :, None]
+    valid_mask = z2_grid >= 0
+    Pz2_mat = np.zeros_like(diff2)
+    Pz2_mat[valid_mask, :] = gaussian_val(diff2[valid_mask, :], sigmaz_b)
+    norm2 = np.trapz(Pz2_mat, x=chi, axis=-1)
+    norm2[norm2 == 0] = 1.0 
+    Pz2_mat /= norm2[:, :, None]
 
-    # we loop over a grid of los separation Pi and mean z z0
-    for i, z_l in enumerate(z_low):
-        for j,pi in enumerate(Pi):
+    # C. Construct Full Kernel Az (Nz, Npi, 400)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        inv_chi2 = 1.0 / (chi**2)
+        inv_chi2[np.isinf(inv_chi2)] = 0.0
+    Az_mat = inv_chi2[None, None, :] * Pz1_mat * Pz2_mat
+    
+    # *** CRITICAL OPTIMIZATION ***
+    # Integrate Kernel over Pi axis HERE
+    # Reduces shape from (Nz, Npi, 400) -> (Nz, 400)
+    Pi_max = block['photoz_errors','Pi_mask_max']
+    pi_mask = (Pi >= -Pi_max) & (Pi <= Pi_max)
+    
+    Az_projected = np.trapz(Az_mat[:, pi_mask, :], x=Pi[pi_mask], axis=1)
+
+    # D. Limber Integration via Matrix Multiplication
+    dchi = np.diff(chi)
+    weights = np.zeros_like(chi)
+    weights[1:-1] = 0.5 * (dchi[:-1] + dchi[1:])
+    weights[0] = 0.5 * dchi[0]
+    weights[-1] = 0.5 * dchi[-1]
+    
+    P_weighted = P_gg_2d * weights[None, :]
+    
+    # Result: Projected C_ell for each z_low bin (Nz, Nell)
+    Cell_projected = np.dot(Az_projected, P_weighted.T)
             
-            # coordinate transform
-            Hz = 100 * np.sqrt(block['cosmological_parameters','omega_m']*(1+z_l)**3 + block['cosmological_parameters', 'omega_lambda']) # no h because Pi is in units h^-1 Mpc
-            z1 = z_l
-            z2 = z_l + (1./clight * Hz * pi)
-            if z2<0: 
-                continue
-
-            Pz1 = gaussian(zf, sigmaz_a, z1)
-            Pz1 = Pz1/np.trapz(Pz1,chi)
-
-            Pz2 = gaussian(zf, sigmaz_b, z2)
-            Pz2 = Pz2/np.trapz(Pz2,chi)
-
-            gz1 = get_approximate_lensing_kernel(block, chi_of_z_spline(z1), chi, 1./(1+zf))
-            gz2 = get_approximate_lensing_kernel(block, chi_of_z_spline(z2), chi, 1./(1+zf))
-
-            C_gg = do_limber_integral(ell, P_gg_2d, Pz1, Pz2, chi)
-            Cell_all[i,j,:]=C_gg
-
-            if include_magnification:
-                C_mg = do_limber_integral(ell, P_mg_2d, gz1, Pz2, chi)
-                Cell_all[i,j,:]+=C_mg
-
-                C_gm = do_limber_integral(ell, P_mg_2d, Pz1, gz2, chi)
-                Cell_all[i,j,:]+=C_gm
-
-                C_mm = do_limber_integral(ell, P_mm_2d, gz1, gz2, chi)
-                Cell_all[i,j,:]+=C_mm
-
-            #import pdb ; pdb.set_trace()
-   
-    # Next do the Hankel transform
-    xi_all = np.zeros_like(Cell_all)-9999.
-    rp = np.logspace(np.log10(0.1), np.log10(300), xi_all.shape[2])
-
     if timing:
         T2 = time()
-        print('Hankel transform...')
+        print('Limber & Pi-Integration done. Starting Hankel...')
 
-    for i, z in enumerate(z_low):
-        x0 =  chi_of_z_spline(z)
-        # do the coordinate transform to convert theta to rp at given redshift
-        theta_radians = np.arctan(rp/x0)
-        theta_degrees = theta_radians * 180./np.pi
-        for j,pi in enumerate(Pi):
-            Cell = Cell_all[i,j,:]
+    # --- 5. Optimized Hankel Transform ---
+    # Loop Nz times (200) instead of 20,000
+    
+    rp = np.logspace(np.log10(0.1), np.log10(300), 300)
+    xi_projected = np.zeros((Nz, len(rp)))
+    x0_arr = chi_of_z_spline(z_low)
+    
+    for i in range(Nz):
+        theta_radians = np.arctan(rp / x0_arr[i])
+        Cell_z = Cell_projected[i, :]
 
-            theta_new,xi_new = FFTLog(ell, Cell*ell, 0, 0, lowring=True)
-            xi_new = xi_new/theta_new/2/np.pi
-            xi_interpolated = interp1d(theta_new,xi_new,fill_value="extrapolate")(theta_radians)
-            xi_all[i,j,:]=xi_interpolated
+        # FFTLog for mu=0 (Galaxy Clustering)
+        theta_new, xi_new = FFTLog(ell, Cell_z * ell, 0, 0, lowring=True)
+        
+        # Normalization
+        xi_new = xi_new / theta_new / 2 / np.pi
+        
+        # Interpolate
+        xi_int = np.interp(theta_radians, theta_new, xi_new, left=xi_new[0], right=xi_new[-1])
+        
+        xi_projected[i, :] = xi_int
 
-
-    # integrate over los separation, between +/-Pi_max
-    Pi_max=100.
-    mask = ((Pi<Pi_max) & (Pi>-Pi_max))
-    xi_rp = np.trapz(xi_all[:,mask,:], x=Pi[mask], axis=1)
-
-    # and then over redshift
-    za, W = get_redshift_kernel(block, 0, 0, zf, chi, sample_a, sample_b)
-    W/=np.trapz(W,zf)
-    Wofz = interp1d(zf,W)
-    K = np.array([Wofz(z_low)]*len(rp)).T
-    w_rp = np.trapz(xi_rp*K, x=z_low, axis=0) #/np.trapz(K, Zm, axis=0)
-
-
+    # --- 6. Final Redshift Integration ---
+    
+    # Get n(z) weights
+    dz = zf[1] - zf[0]
+    dxdz = np.gradient(chi, dz)
+    nz_b_full = get_nz_on_grid(block, sample_b, zf)
+    nz_a_full = get_nz_on_grid(block, sample_a, zf)
+    
+    with np.errstate(divide='ignore', invalid='ignore'):
+        X_kernel = nz_a_full * nz_b_full / (chi**2) / dxdz
+        X_kernel[np.isinf(X_kernel)] = 0.0
+        X_kernel[np.isnan(X_kernel)] = 0.0
+    X_kernel[0] = 0.0
+    
+    trapz_norm = np.trapz(X_kernel, x=zf)
+    W = np.zeros_like(X_kernel) if trapz_norm == 0 else X_kernel / trapz_norm
+    
+    # Interpolate W to z_low
+    W_at_zlow = np.interp(z_low, zf, W)
+    
+    # Explicit K matrix to prevent dimension collapse
+    Nell_rp = xi_projected.shape[1]
+    K = np.tile(W_at_zlow[:, None], (1, Nell_rp))
+    
+    w_rp = np.trapz(xi_projected * K, x=z_low, axis=0)
+    
+    # Save
+    block['galaxy_w','w_rp_1_1_%s_%s'%(sample_a,sample_b)] = w_rp
+    block['galaxy_w', 'r_p'] = rp
+    
     if timing:
         T3 = time()
-        print('time 1:',T1-T0)
-        print('time 2:',T2-T1)
-        print('time 3:',T3-T2)
-
-    # finally save wg+ to the data block
-    block.put_double_array_1d('galaxy_w', 'w_rp_1_1_%s_%s'%(sample_a,sample_b), w_rp)
-    block['galaxy_w', 'r_p'] = rp
-
+        print('Total Time:', T3-T0)
+    
     return 0
 
-def gaussian(x,s,m):
-    return np.exp(-(x-m)*(x-m)/2/s/s)
-
-
-def get_approximate_lensing_kernel(block, X0, chi, az):
-    H0 = block['cosmological_parameters', 'h0']*100
-    omega_m = block['cosmological_parameters', 'omega_m']
-    gz = 3/2 * H0 * H0 * omega_m / clight / clight * (chi/az) * (X0-chi) / X0
-    gz[gz<0] = 0.
-    return gz
-
-
-def get_lensing_kernel(block, chi, pz, az):
-    H0 = block['cosmological_parameters', 'h0']*100
-    omega_m = block['cosmological_parameters', 'omega_m']
-    gz=[]
-    for i,x in enumerate(chi):
-        z = 1/az - 1
-        dz_dX = np.gradient(z,chi)
-        coeff = 3/2 * H0 * H0 * omega_m / clight / clight * (x/az[i])
-        #I = np.trapz(pz*dz_dX*(X-x)/X, X)
-        I = np.trapz(pz*(chi-x)/chi, chi)
-        gz.append(coeff*I)
-    gz = np.array(gz)
-    gz[gz<0] = 0.
-    return gz
-
-def do_limber_integral(ell, P, p1, p2, X):
-
-    I1 = interp1d(X,p1)
-    I2 = interp1d(X,p2)
-    cl = [] 
-    Az = 1./X/X*I1(X)*I2(X)
-    Az[np.isinf(Az)]=0
-    Az[np.isnan(Az)]=0
-
-    Az_reshaped = np.array([Az]*P.shape[0])
-    cl = np.trapz(Az_reshaped*P[:,:,0],X,axis=1)
-
- #   cl = np.sum(Az_reshaped*P[:,:,0],axis=1)*(X[1]-X[0])
-
-#    from time import time
-
- #   T0 = time()
-    
-#    for i, l in enumerate(ell):
-
-        #P1d = [P((l+0.5)/x, x) for x in X]
-#        P1d = P[i,:]
-#        P1d[np.isinf(P1d)]=0
- #       P1d[np.isnan(P1d)]=0
-
-  #      K = np.trapz(Az*np.array(P1d)[:,0],X)
-  #      K = np.sum(Az*np.array(P1d)[:,0])*(X[1]-X[0])
- #       cl.append(K)
-#
-  #  import pdb ; pdb.set_trace()
-
- #   cl2 = [] 
- #   dX = X[1]-X[0]
-
- #   T1 = time()
-    
- #   for i, l in enumerate(ell):
- #       K = 0
- #       for x in X:
- #           Az = 1./x/x*I1(x)*I2(x)
- #           if not np.isfinite(Az):
- #               Az = 0.
-
- #           Pkz = P((l+0.5)/x, x)
-#
-#            K+=Az*Pkz
-#
- #       cl2.append(K*dX)
- #   T2 = time()
-
- #   print(T1-T0)
-
-
-    return np.array(cl)
-
-def get_redshift_kernel(block, i, j, z0, x, sample_a, sample_b):
-
-
-    dz = z0[1]-z0[0]
-    dxdz = np.gradient(x,dz)
-    #interp_dchi = spi.interp1d(z,Dchi)
-
-    na = block['nz_%s'%sample_a, 'nbin']
-    nb = block['nz_%s'%sample_b, 'nbin']
-    zmin = 0.01
-
-    nz_b = block['nz_%s'%sample_b, 'bin_%d'%(j+1)]
-    zb = block['nz_%s'%sample_b, 'z']
-    nz_a = block['nz_%s'%sample_a, 'bin_%d'%(i+1)]
-    za = block['nz_%s'%sample_a, 'z']
-
-    interp_nz = interp1d(zb, nz_b, fill_value='extrapolate')
-    nz_b = interp_nz(z0)
-    interp_nz = interp1d(za, nz_a, fill_value='extrapolate')
-    nz_a = interp_nz(z0)
-
-
-    X = nz_a * nz_b/x/x/dxdz
-    X[0]=0
-    interp_X = interp1d(z0, X, fill_value='extrapolate')
-
-    # Inner integral over redshift
-    V,Verr = quad(interp_X, zmin, z0.max())
-    W = nz_a*nz_b/x/x/dxdz/np.trapz(X,x=z0)
-    #V
-    W[0]=0
-
-    return z0,W
-
-def get_sigma_z(block, z, sample):
-
-    #import pdb ; pdb.set_trace()
-    az = block['photoz_errors','a_%s'%sample]
-    bz = block['photoz_errors','b_%s'%sample]
-    sigmaz = az*z + bz
-
-    # we don't want to extrapolate the linear sigmaz to very extreme redshifts
-    # so set some limits here
-    nofz = block['nz_redmagic_density','bin_1']
-    z_nofz = block['nz_redmagic_density','z']
-    N0 = nofz.max()/100
-
-    z1 = z_nofz[nofz>N0][0]
-    z2 = z_nofz[nofz>N0][-1]
-
-    sigmaz[(z<z1)]=0.01
-    sigmaz[(z>z2)]=0.01
-
-    return sigmaz
-
+# --- Helper Functions ---
+def gaussian_val(diff, s):
+    return np.exp( -diff**2 / (2*s**2) )
+            
+def get_nz_on_grid(block, sample_name, z_grid):
+    bin_idx = 1 
+    name = 'nz_%s' % sample_name
+    if not block.has_section(name):
+         return np.zeros_like(z_grid)
+    z_orig = block[name, 'z']
+    nz_orig = block[name, 'bin_%d' % bin_idx]
+    return np.interp(z_grid, z_orig, nz_orig, left=0, right=0)
