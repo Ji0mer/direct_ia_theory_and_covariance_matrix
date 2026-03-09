@@ -10,20 +10,21 @@ command "export IA_LIB1 = /XXX/XXX/" in direct_ia_theory setup.sh, here XXX is y
 add_nz:
 * **Summary**: Replace the redshift distribution in the reference FITS file with that of the target sample.
 * **Language**: Python
-* **Inputs**:
-* **Outputs**:
+* **Inputs**: density sample and shape sample redshift distribution.
+* **Outputs**: N/A
 
 covmat:
-* **Summary**: Compute the covariance matrix for the data vector, with units of $Mpc^2/h^2$.
+* **Summary**: Compute the covariance matrix for the data vector, with units of $Mpc^2/h^2$. Input parameters should in Mpc.
 * **Language**: Python
-* **Inputs**:
-* **Outputs**:
+* **Inputs**: density sample and shape sample redshift distribution, nonlinear matter power spectrum, survey configuration, IA and galaxy bias parameters,
+separate distance.
+* **Outputs**: covariance matrix correspond to input separate distance. Order in Wgp-Wpp-Wgg.
 
 makefits:
 * **Summary**: Combine the output from the CosmoSIS test sampler into a FITS file, following the format of the echoIA data format script.
 * **Language**: Python
-* **Inputs**:
-* **Outputs**:
+* **Inputs**: Output fits name, $P_{g+}(k,z_{\text{eff}})$, $P_{=+}(k,z_{\text{eff}})$, $P_{gg}(k,z_{\text{eff}})$, shape noise, mean comoving number density.
+* **Outputs**: 2pt fits file
 
 nonlinear_bias:
 * **Summary**: Functions the same as the nonlinear bias in direct_ia_theory, but caches the intermediate data to improve execution speed.
