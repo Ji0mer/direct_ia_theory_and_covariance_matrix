@@ -43,6 +43,19 @@ nonlinear_bias/projection/structure/tatt:
 * **Summary**: Functions the same as the structure/fast_pt in direct_ia_theory, but caches the intermediate data to improve execution speed.
 * **Language**: Python
 
+synthetic_parameter:
+* **Summary**: The COSMOS2025 catalog fulfills the requirements for the Roman Space Telescope survey, consequently, we 
+utilize it as the basis for our sample selection. We apply standard quality cuts on signal-to-noise, resolution, and 
+shape noise to mimic realistic observational constraints. This allows us to construct robust mock catalogs, including 
+spectroscopic samples, as well as photometric redMaGiC-like samples. For our parameter modeling, we use the power law 
+equation of rest frame luminance to model the Intrinsic Alignment amplitude. We calculate this A_IA value individually for the red galaxy 
+sub-samples based on their rest-frame absolute magnitudes. The linear galaxy bias is determined by linearly extrapolating the emission 
+line galaxy and redMaGiC-like samples presented in [Dark Energy Survey Year 3 results: Galaxy-halo connection from galaxy-galaxy lensing]
+(https://arxiv.org/pdf/2106.08438) and [Linear bias forecasts for emission line cosmological surveys]
+(https://academic.oup.com/mnras/article/486/4/5737/5486120?guestAccessKey=). The non-linear galaxy bias is derived based 
+on the fitting relation from simulations: $b_{2}=0.412-2.134b_{1}+0.929b_{1}^{2}+0.008b_{1}^{3}$.
+* **Language**: ipynb
+
 
 
 
