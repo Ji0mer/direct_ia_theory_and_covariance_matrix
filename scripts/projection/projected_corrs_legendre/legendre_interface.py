@@ -45,9 +45,9 @@ def return_pk_terms(bv1,bv2):
     c8 = bv1[0]*bv2[4]+bv2[0]*bv1[4]
     return c1,c2,c3,c4,c5,c6,c7,c8
 
-# 检查文件夹是否存在文件
+# Check whether the folder contains any files
 def folder_has_files(folder_path):
-    # 列出文件夹中的内容
+    # List the contents of the folder
     return any(os.path.isfile(os.path.join(folder_path, f)) for f in os.listdir(folder_path))
 
 def interp_power(input_k,input_z,input_power,knew,znew):
@@ -655,4 +655,3 @@ class Projected_Corr_RSD():
         if do_DS:
             W=self.w_to_DS(rp=self.rp,w=W)
         return W
-

@@ -21,9 +21,9 @@ import json
 #from timeit import default_timer as timer
 #from datetime import timedelta
 
-# 检查文件夹是否存在文件
+# Check whether the folder contains any files
 def folder_has_files(folder_path):
-    # 列出文件夹中的内容
+    # List the contents of the folder
     return any(os.path.isfile(os.path.join(folder_path, f)) for f in os.listdir(folder_path))
 
 def compute_c1_baseline():
@@ -1641,4 +1641,3 @@ def setup(options):
 
 def execute(block, config):
     return config.execute(block)
-

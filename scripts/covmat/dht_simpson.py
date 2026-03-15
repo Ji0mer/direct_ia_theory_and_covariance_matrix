@@ -1,12 +1,8 @@
 import os
-import time
-import itertools
 import numpy as np
-from scipy.optimize import fsolve
 from scipy.integrate import simpson,quad
 from scipy.interpolate import interp1d
-from scipy.special import jn, jn_zeros,jv
-#from scipy.integrate import trapezoid as trapz
+from scipy.special import jn
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from itertools import combinations_with_replacement
 
@@ -110,7 +106,7 @@ class Compute_covmat():
         print("Compute Bessel function parallel...")
     
         if self.avg_jn == True:
-            # 准备并行计算的任务
+            # Prepare tasks for parallel computation
             tasks = []
             keys = []
             
@@ -125,15 +121,15 @@ class Compute_covmat():
                     keys.append(i)
                 else:
                     print(i)
-                    # 直接设置为0，不需要计算
+                    # Set directly to 0; no computation needed
                     self.rp[i], self.j[i] = 0, 0
             
-            # 并行计算
+            # Parallel computation
             if tasks:
-                # 使用ProcessPoolExecutor (推荐)
+                # Use ProcessPoolExecutor (recommended)
                 max_workers = min(len(tasks), os.cpu_count())
                 with ProcessPoolExecutor(max_workers=max_workers) as executor:
-                    # 提交任务
+                    # Submit tasks
                     future_to_key = {}
                     for task, key in zip(tasks, keys):
                         if task[0] == 'avg_jns':
@@ -142,7 +138,7 @@ class Compute_covmat():
                             future = executor.submit(self.compute_avg_jn, task[1])
                         future_to_key[future] = key
                     
-                    # 收集结果
+                    # Collect results
                     for future in as_completed(future_to_key):
                         key = future_to_key[future]
                         try:
@@ -154,7 +150,7 @@ class Compute_covmat():
                             self.rp[key], self.j[key] = 0, 0
         
         else:
-            # 非平均贝塞尔函数的计算保持原样（通常较快）
+            # Keep the non-averaged Bessel-function computation unchanged (usually faster)
             for i in self.nv:
                 if isinstance(i, int):
                     self.rp[i], self.j[i] = self.compute_jn(i)
@@ -382,15 +378,9 @@ class Compute_covmat():
         
         kmin = float(self.k[0])
         kmax = float(self.k[-1])
-        kcutoff = jn_zeros(2,11)[-1]
     
         for i in range(len(self.rbins) - 1):
             for j in range(len(self.rbins) - 1):
-
-                upper1 = kcutoff / self.rp[2][i]
-                upper2 = kcutoff / self.rp[2][j]
-                upper = np.minimum(upper1,upper2)
-                
                 if i == j:
                     y = (self.k / (2*np.pi)) * self.j[2][i] * self.j[2][j] * ( (pgg + Ng) * (pii + Np) + pgi**2 )
                     f = interp1d(self.k, y, kind='cubic', bounds_error=False, fill_value=0.0)
@@ -406,26 +396,26 @@ class Compute_covmat():
         ppp_temp = interp_func(self.ktemp,ppp_temp,self.k)
         pgp_temp = interp_func(self.ktemp,pgp_temp,self.k)
         
-        # ---- 基本尺寸与预分配 ----
+        # ---- Basic sizes and preallocation ----
         nbins = len(self.rbins) - 1
         covc_romain     = np.zeros((nbins, nbins), dtype=float)
         covpgi2_romain  = np.zeros((nbins, nbins), dtype=float)
         covpggxc_romain = np.zeros((nbins, nbins), dtype=float)
         covpppxc_romain = np.zeros((nbins, nbins), dtype=float)
     
-        # ---- 只计算一次的预计算（与 l 无关）----
+        # ---- One-time precomputation (independent of l) ----
         k    = self.k                   # (Nk,)
-        j2   = self.j[2]                # dict: i -> j2_i(k), 每个是 (Nk,)
+        j2   = self.j[2]                # dict: i -> j2_i(k), each with shape (Nk,)
         kmin = float(np.min(k))
         kmax = float(np.max(k))
     
-        # 为了与原实现一致：每个 (i,j) 的被积函数都形如：
+        # To match the original implementation, each integrand for (i, j) has the form:
         #   y(k) = (k / 2π) * j2_i(k) * j2_j(k) * X(k)
-        # 然后在 [kmin, kmax] 上做数值积分
-        # 这里保留你原来的 quad + cubic 插值写法（最小改动）
+        # Then perform the numerical integral over [kmin, kmax]
+        # Keep the original quad + cubic interpolation approach here (minimal change)
         two_pi = 2.0 * np.pi
     
-        # 把输入功率谱统一为 np.ndarray（以防外部传入 list）
+        # Convert the input power spectra to np.ndarray uniformly (in case a list is passed in)
         pgi = np.asarray(pgp_temp)   # P_gi(k)
         pgg = np.asarray(p_gg_linz)  # P_gg(k)
         pii = np.asarray(ppp_temp)   # P_ii(k)
@@ -433,35 +423,29 @@ class Compute_covmat():
         if n_workers is None or n_workers <= 0:
             n_workers = os.cpu_count() or 1
     
-        # 上三角（含对角）索引列表：只算一次，再对称回填
+        # Upper-triangular index list (including the diagonal): compute once, then fill symmetrically
         pairs = list(combinations_with_replacement(range(nbins), 2))
     
         def _one_pair(i, j):
             # j2_i, j2_j: (Nk,)
-            
-            kcutoff = jn_zeros(2,11)[-1]
-            upper1 = kcutoff / self.rp[2][i]
-            upper2 = kcutoff / self.rp[2][j]
-            upper = np.minimum(upper1,upper2)
-            
             j2_i = np.asarray(j2[i])
             j2_j = np.asarray(j2[j])
     
             base = (k / two_pi) * j2_i * j2_j  # (Nk,)
     
-            # 四个被积函数 y1..y4
-            y1 = base * (pgi ** 2)    # 对应 covpgi2
-            y2 = base * (Ng * Np)     # 对应 covc
-            y3 = base * (pgg * Np)    # 对应 covpggxc
-            y4 = base * (Ng * pii)    # 对应 covpppxc
+            # The four integrands y1..y4
+            y1 = base * (pgi ** 2)    # Corresponds to covpgi2
+            y2 = base * (Ng * Np)     # Corresponds to covc
+            y3 = base * (pgg * Np)    # Corresponds to covpggxc
+            y4 = base * (Ng * pii)    # Corresponds to covpppxc
     
-            # 插值为标量函数，交给 quad；超界置 0
+            # Interpolate as scalar functions for quad; set out-of-range values to 0
             f1 = interp1d(k, y1, kind='cubic', bounds_error=False, fill_value=0.0)
             f2 = interp1d(k, y2, kind='cubic', bounds_error=False, fill_value=0.0)
             f3 = interp1d(k, y3, kind='cubic', bounds_error=False, fill_value=0.0)
             f4 = interp1d(k, y4, kind='cubic', bounds_error=False, fill_value=0.0)
     
-            # 做积分
+            # Perform the integration
             v_pgi2 = quad(f1, kmin, kmax, limit=self.quad_limits)[0]
             v_c    = quad(f2, kmin, kmax, limit=self.quad_limits)[0]
             v_pggx = quad(f3, kmin, kmax, limit=self.quad_limits)[0]
@@ -469,19 +453,19 @@ class Compute_covmat():
     
             return i, j, v_c, v_pgi2, v_pggx, v_pppx
     
-        # 并行调度
+        # Parallel scheduling
         with ThreadPoolExecutor(max_workers=n_workers) as ex:
             futures = [ex.submit(_one_pair, i, j) for (i, j) in pairs]
             for fut in as_completed(futures):
                 i, j, v_c, v_pgi2, v_pggx, v_pppx = fut.result()
     
-                # 上三角位置
+                # Upper-triangular position
                 covc_romain[i, j]     = v_c
                 covpgi2_romain[i, j]  = v_pgi2
                 covpggxc_romain[i, j] = v_pggx
                 covpppxc_romain[i, j] = v_pppx
     
-                # 对称回填（如果不是对角元）
+                # Fill the symmetric entry as well (if this is not a diagonal element)
                 if i != j:
                     covc_romain[j, i]     = v_c
                     covpgi2_romain[j, i]  = v_pgi2
