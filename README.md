@@ -1,24 +1,16 @@
 # Direct IA Forecast Pipeline
 
-This repository contains the project-specific CosmoSIS pipeline used to generate direct intrinsic-alignment (IA) mock data vectors, covariance matrices, and forecast products in an echoIA-style FITS format.
+This repository contains the project-specific CosmoSIS pipeline used to generate direct intrinsic-alignment (IA) mock data vectors, compute covariance matrices, and run forecast analyses in an echoIA-style FITS format.
 
 It extends [`direct_ia_theory`](https://github.com/ssamuroff/direct_ia_theory) with:
 
 - custom `n(z)` replacement utilities
-- covariance-matrix construction
+- dedicated covariance-matrix calculation code for projected IA observables
 - FITS export helpers
 - photo-z projected-correlation modules
 - cached versions of several expensive theory components
 
 Contact: Zepei Yang (`yang.zep@northeastern.edu`)
-
-## Requirements
-
-- CosmoSIS
-- `cosmosis-standard-library`
-- `direct_ia_theory`
-- Python packages used by the custom modules, including `numpy`, `scipy`, `astropy`, `matplotlib`, and `fitsio`
-- MultiNest if you want to run the forecast examples as configured
 
 ## Setup
 
@@ -65,13 +57,17 @@ cosmosis examples/params-generate-data-photoz.ini
 
 If you only want a quick smoke test, switch `sampler = test` in the relevant `.ini` file.
 
+## Covariance matrix pipeline
+
+Covariance-matrix computation is a central part of this repository, not just a helper step. The code under [`scripts/covmat`](/projects/blazek_group_storage/zepei/ia_forecast/direct_ia_to_public/scripts/covmat) builds covariance matrices for the projected `wgp`, `wpp`, and `wgg` observables and is used directly by the mock-data generation workflow.
+
 ## Main files
 
 - [`examples`](/projects/blazek_group_storage/zepei/ia_forecast/direct_ia_to_public/examples): runnable CosmoSIS configs
 - [`fits_data`](/projects/blazek_group_storage/zepei/ia_forecast/direct_ia_to_public/fits_data): example and generated FITS products
 - [`nz_data`](/projects/blazek_group_storage/zepei/ia_forecast/direct_ia_to_public/nz_data): redshift-distribution inputs
 - [`output`](/projects/blazek_group_storage/zepei/ia_forecast/direct_ia_to_public/output): cached intermediates and run outputs
-- [`scripts/covmat`](/projects/blazek_group_storage/zepei/ia_forecast/direct_ia_to_public/scripts/covmat): covariance construction
+- [`scripts/covmat`](/projects/blazek_group_storage/zepei/ia_forecast/direct_ia_to_public/scripts/covmat): covariance-matrix calculation for `wgp`, `wpp`, and `wgg`
 - [`scripts/makefits`](/projects/blazek_group_storage/zepei/ia_forecast/direct_ia_to_public/scripts/makefits): FITS writer
 - [`scripts/photoz`](/projects/blazek_group_storage/zepei/ia_forecast/direct_ia_to_public/scripts/photoz): photo-z projected-correlation modules
 - [`scripts/nonlinear_bias`](/projects/blazek_group_storage/zepei/ia_forecast/direct_ia_to_public/scripts/nonlinear_bias), [`scripts/projection`](/projects/blazek_group_storage/zepei/ia_forecast/direct_ia_to_public/scripts/projection), [`scripts/structure`](/projects/blazek_group_storage/zepei/ia_forecast/direct_ia_to_public/scripts/structure), [`scripts/tatt`](/projects/blazek_group_storage/zepei/ia_forecast/direct_ia_to_public/scripts/tatt): cached theory modules
