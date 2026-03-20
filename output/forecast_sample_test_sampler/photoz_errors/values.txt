@@ -1,4 +1,0 @@
-mu = 1.0
-n_pi = 200
-pi_mask_max = 100
-sigmaz = 0.022
