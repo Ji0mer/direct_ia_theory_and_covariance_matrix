@@ -10,6 +10,5 @@ export OMP_NUM_THREADS=1
 
 # replace these lines with wherever the repos live in your setup
 export COSMOSIS_LIB=/projects/blazek_group_storage/zepei/cosmosis-standard-library/
-export IA_LIB=/projects/blazek_group_storage/zepei/ia_forecast/direct_ia_theory/
-export IA_LIB1=/projects/blazek_group_storage/zepei/ia_forecast/direct_ia_to_public/
-export DATA_DIR=$IA_LIB1/fits_data/
+export IA_LIB=/projects/blazek_group_storage/zepei/ia_forecast/direct_ia_to_public/
+export DATA_DIR=$IA_LIB/fits_data/

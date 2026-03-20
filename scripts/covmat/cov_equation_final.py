@@ -57,7 +57,7 @@ def execute(block, config):
     zeff, area_shape, area_dens, sample, rbins, nk, Ng, Np = config
     
     h0 = block["cosmological_parameters","h0"]
-    Pimax = 100/h0 #Mpc
+    Pimax = block["LOS_bin","Pi_max"]/h0 #Mpc
     
     cosmo=Planck13.clone(H0=h0*100)
     omega_shape = area_shape*(np.pi/180)**2

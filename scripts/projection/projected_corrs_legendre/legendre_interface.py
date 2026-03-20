@@ -80,7 +80,10 @@ def setup(options):
 
     rp = np.logspace(np.log10(rmin), np.log10(rmax), nr)
 
-    pimax = options.get_double(option_section, "pimax", default=100.) # in h^-1 Mpc
+    if options.has_value(option_section, "pimax"):
+        pimax = options.get_double(option_section, "pimax")
+    else:
+        pimax = None
 
     corrs = options.get_string(option_section, "correlations", default="wgp").split()
 
@@ -94,7 +97,10 @@ def setup(options):
     cl_dir = options.get_string(option_section, "cl_loc", default="")
 
     if do_rsd:
-        print('will include RSDs (Pi_max = %3.1f)'%pimax)
+        if pimax is None:
+            print('will include RSDs (Pi_max will be read from values[LOS_bin])')
+        else:
+            print('will include RSDs (Pi_max = %3.1f)'%pimax)
     else:
         print('will not include RSDs :( ')
         print("redshift space will not be distorted, and it's your fault...")
@@ -107,6 +113,14 @@ def setup(options):
 def execute(block, config):
 
     sample_a,sample_b,rp,pimax,nk,corrs,do_rsd, do_lensing, do_magnification, cl_dir, pks_folder, wgg_folder = config
+
+    if block.has_value("LOS_bin", "Pi_max"):
+        pimax = block["LOS_bin", "Pi_max"]
+    elif pimax is None:
+        raise ValueError(
+            "Projected correlations require Pi_max. Set [LOS_bin] Pi_max in the values file "
+            "or provide pimax in the module options."
+        )
 
     k = block['galaxy_power', 'k_h']
     print(k.min(),k.max())
@@ -540,12 +554,14 @@ def get_redshift_kernel(block, i, j, z0, x, sample_a, sample_b):
 
 
 class Projected_Corr_RSD():
-    def __init__(self,rp=None,pi=None,pi_max=100,l=[0,2,4],k=None, lowring=True):
+    def __init__(self,rp=None,pi=None,pi_max=None,l=[0,2,4],k=None, lowring=True):
         self.rp=rp
         self.pi=pi
         if rp is None:
             self.rp=np.logspace(-1,np.log10(200),60)
         if pi is None:
+            if pi_max is None:
+                raise ValueError("pi_max must be provided when pi is not supplied.")
             self.pi=np.logspace(-3,np.log10(pi_max),125)
 #            self.pi=np.append(0,self.pi)
         self.dpi=np.gradient(self.pi)

@@ -26,7 +26,7 @@ def execute(block, config):
     # --- 1. Setup Grids ---
     Npi = block['photoz_errors','N_pi']
     Nz = 200
-    Pi = np.linspace(-block['photoz_errors','Pi_max'], block['photoz_errors','Pi_max'], Npi)
+    Pi = np.linspace(-block['LOS_bin','Pi_max'], block['LOS_bin','Pi_max'], Npi)
     z_low = np.linspace(0.01, 4.00, Nz)
     
     z_distance = block["distances","z"]

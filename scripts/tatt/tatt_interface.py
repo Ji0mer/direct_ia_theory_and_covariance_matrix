@@ -1,440 +1,286 @@
-# -*- coding: utf-8 -*-
-import sys
-import os
-
-# from ia_lib import tatt, tidal_alignment, tidal_torque, del4
-from des_ia_lib import del4
-from des_ia_lib.common import resample_power
 import numpy as np
-
-# We now return you to your module.
-
-
-from cosmosis.datablock import names, option_section
 import scipy.interpolate as interp
+from cosmosis.datablock import names, option_section
+
+SUPPORTED_IA_MODELS = {"nla", "tatt"}
+FASTPT_KEYS = [
+    "P_tt_EE",
+    "P_tt_BB",
+    "P_ta_dE1",
+    "P_ta_dE2",
+    "P_ta_EE",
+    "P_ta_BB",
+    "P_mix_A",
+    "P_mix_B",
+    "P_mix_D_EE",
+    "P_mix_D_BB",
+    "Plin",
+]
 
 
-class Pk_interp(object):
-    def __init__(self, ks, Pks):
-        if np.all(Pks > 0):
+class PkInterp:
+    def __init__(self, ks, pks):
+        if np.all(pks > 0):
             self.interp_func = interp.interp1d(
-                np.log(ks), np.log(Pks), bounds_error=False, fill_value=-np.inf
+                np.log(ks), np.log(pks), bounds_error=False, fill_value=-np.inf
             )
             self.interp_type = "loglog"
-        elif np.all(Pks < 0):
+        elif np.all(pks < 0):
             self.interp_func = interp.interp1d(
-                np.log(ks), np.log(-Pks), bounds_error=False, fill_value=-np.inf
+                np.log(ks), np.log(-pks), bounds_error=False, fill_value=-np.inf
             )
             self.interp_type = "minus_loglog"
         else:
             self.interp_func = interp.interp1d(
-                np.log(ks), Pks, bounds_error=False, fill_value=0.0
+                np.log(ks), pks, bounds_error=False, fill_value=0.0
             )
-            self.interp_type = "log_ell"
+            self.interp_type = "log_linear"
 
     def __call__(self, ks):
+        values = self.interp_func(np.log(ks))
         if self.interp_type == "loglog":
-            cl = np.exp(self.interp_func(np.log(ks)))
-        elif self.interp_type == "minus_loglog":
-            cl = -np.exp(self.interp_func(np.log(ks)))
-        else:
-            assert self.interp_type == "log_ell"
-            cl = self.interp_func(np.log(ks))
-        return cl
+            return np.exp(values)
+        if self.interp_type == "minus_loglog":
+            return -np.exp(values)
+        return values
 
 
 def compute_c1_baseline():
-    C1_M_sun = 5e-14  # h^-2 M_S^-1 Mpc^3
-    M_sun = 1.9891e30  # kg
-    Mpc_in_m = 3.0857e22  # meters
-    C1_SI = C1_M_sun / M_sun * (Mpc_in_m) ** 3  # h^-2 kg^-1 m^3
-    # rho_crit_0 = 3 H^2 / 8 pi G
-    G = 6.67384e-11  # m^3 kg^-1 s^-2
-    H = 100  #  h km s^-1 Mpc^-1
-    H_SI = H * 1000.0 / Mpc_in_m  # h s^-1
-    rho_crit_0 = 3 * H_SI ** 2 / (8 * np.pi * G)  #  h^2 kg m^-3
-    f = C1_SI * rho_crit_0
-    return f
+    c1_m_sun = 5e-14
+    m_sun = 1.9891e30
+    mpc_in_m = 3.0857e22
+    c1_si = c1_m_sun / m_sun * (mpc_in_m**3)
+    gravitational_constant = 6.67384e-11
+    hubble = 100
+    hubble_si = hubble * 1000.0 / mpc_in_m
+    rho_crit_0 = 3 * hubble_si**2 / (8 * np.pi * gravitational_constant)
+    return c1_si * rho_crit_0
 
 
-def grow(P, Dz, power):
-    Pz = np.zeros((len(Dz), len(P)))
-    for i, Dzi in enumerate(Dz):
-        Pz[i] = P * (Dzi ** power)
-    return Pz
+def grow(power_spectrum_z0, growth, power):
+    power_spectrum = np.zeros((len(growth), len(power_spectrum_z0)))
+    for i, growth_i in enumerate(growth):
+        power_spectrum[i] = power_spectrum_z0 * growth_i**power
+    return power_spectrum
 
 
-def amp_3d(C, num_z, num_k):
-    C = np.atleast_1d(C)
-
-    if C.shape == (1,):
-        return C * np.ones((num_z, num_k))
-    elif C.shape == (num_z,):
-        return np.outer(C, np.ones(num_k))
-    else:
-        assert C.shape == (num_z, num_k)
-        return C
-
-
-def resample_k(k_in, P_in, k_out):
-    p_interp = Pk_interp(k_lin, P_in)
-    return p_interp(k_out)
+def amp_3d(amplitude, num_z, num_k):
+    amplitude = np.atleast_1d(amplitude)
+    if amplitude.shape == (1,):
+        return amplitude * np.ones((num_z, num_k))
+    if amplitude.shape == (num_z,):
+        return np.outer(amplitude, np.ones(num_k))
+    if amplitude.shape == (num_z, num_k):
+        return amplitude
+    raise ValueError(f"Unexpected amplitude shape {amplitude.shape}")
 
 
-def get_IA_terms(
-    block,
-    k_out,
-    k_nl,
-    z_out,
-    P_lin,
-    P_nl,
-    Dz,
-    A1,
-    A2,
-    Adel,
-    bias_ta,
-    bias_tt,
-    alpha1,
-    alpha2,
-    alphadel,
-    z_piv,
-    Omega_m,
-    sub_lowk=False,
-):
+def compute_amplitudes(z, dz, a1, a2, adel, alpha1, alpha2, alphadel, z_piv, omega_m, num_k):
+    c1_rhocrit = compute_c1_baseline()
+    c1 = -a1 * c1_rhocrit * omega_m / dz * ((1.0 + z) / (1.0 + z_piv)) ** alpha1
+    cdel = -adel * c1_rhocrit * omega_m / dz * ((1.0 + z) / (1.0 + z_piv)) ** alphadel
+    c2 = 5 * a2 * c1_rhocrit * omega_m / dz**2 * ((1.0 + z) / (1.0 + z_piv)) ** alpha2
+    return (
+        amp_3d(c1, len(z), num_k),
+        amp_3d(cdel, len(z), num_k),
+        amp_3d(c2, len(z), num_k),
+    )
 
-    # This function reads in PT IA terms (computed at z=0), interpolates them onto k_out,
-    # evolves them in z using the growth function Dz, and combines them into physically motivated terms
-    # C1, C2 are amplitudes for TT and TA contributions and can be either scalars, 1d array with length Dz, or 2d array with shape (len(Dz), len(k_nl))
-    # same for bias_red, bias_blue
 
-    # get from the block
-    k_use = k_nl  # this sets which k grid will be used. Changing this may break some things.
-    P_IA_dict = {}
-    for key in [
-        "P_tt_EE",
-        "P_tt_BB",
-        "P_ta_dE1",
-        "P_ta_dE2",
-        "P_ta_EE",
-        "P_ta_BB",
-        "P_mix_A",
-        "P_mix_B",
-        "P_mix_D_EE",
-        "P_mix_D_BB",
-        "Plin",
-    ]:
-        z, k_IA, p = block.get_grid("fastpt", "z", "k_h", key)
-        if sub_lowk and key in [
+def load_fastpt_terms(block, k_out, z_out, growth, sub_lowk):
+    terms = {}
+    for key in FASTPT_KEYS:
+        z_fastpt, k_fastpt, power = block.get_grid("fastpt", "z", "k_h", key)
+
+        if sub_lowk and key in {
             "P_tt_EE",
             "P_tt_BB",
             "P_ta_EE",
             "P_ta_BB",
             "P_mix_D_EE",
             "P_mix_D_BB",
-        ]:
-            to_sub = p[:, 0][:, np.newaxis]
-            p -= to_sub
-            p[:, 0] = p[:, 1]
+        }:
+            power = power.copy()
+            power -= power[:, 0][:, np.newaxis]
+            power[:, 0] = power[:, 1]
 
-        assert np.allclose(z, z_out)
+        if not np.allclose(z_fastpt, z_out):
+            raise ValueError(f"Expected fastpt z grid to match matter-power z grid for {key}")
 
-        try:
-            assert np.allclose(k_use, k_IA)
-            P_IA_dict[key] = p
-        except (AssertionError, ValueError):
-            # interpolate and re-apply correct growth factor if necessary
-            p0_orig = p[0]
-            p0_out = Pk_interp(k_IA, p0_orig)(k_use)
-            if key == "Plin":
-                P_IA_dict[key] = grow(p0_out, Dz, 2)
-            else:
-                P_IA_dict[key] = grow(p0_out, Dz, 4)
+        if np.allclose(k_out, k_fastpt):
+            terms[key] = power
+            continue
 
-    # include power law evolution of amplitude. Right now, this step is always done, alpha = 0 means no evolution.
-    # Note, this currently compatible with scalar A1 and A2 or with vector A1 and A2 with length = z_out
+        power_z0 = PkInterp(k_fastpt, power[0])(k_out)
+        growth_power = 2 if key == "Plin" else 4
+        terms[key] = grow(power_z0, growth, growth_power)
 
-    C1_RHOCRIT = compute_c1_baseline()
+    return terms
 
-    C1 = (
-        -1.0
-        * A1
-        * C1_RHOCRIT
-        * Omega_m
-        / Dz
-        * ((1.0 + z_out) / (1.0 + z_piv)) ** alpha1
+
+def get_ia_terms(
+    block,
+    k_nl,
+    z_out,
+    p_nl,
+    growth,
+    a1,
+    a2,
+    adel,
+    alpha1,
+    alpha2,
+    alphadel,
+    z_piv,
+    omega_m,
+    sub_lowk=False,
+):
+    k_use = k_nl
+    c1, cdel, c2 = compute_amplitudes(
+        z_out, growth, a1, a2, adel, alpha1, alpha2, alphadel, z_piv, omega_m, len(k_use)
     )
-    Cdel = (
-        -1.0
-        * Adel
-        * C1_RHOCRIT
-        * Omega_m
-        / Dz
-        * ((1.0 + z_out) / (1.0 + z_piv)) ** alphadel
+    fastpt_terms = load_fastpt_terms(block, k_use, z_out, growth, sub_lowk)
+
+    ta_ii_ee = cdel**2 * fastpt_terms["P_ta_EE"] + c1 * cdel * (
+        2 * fastpt_terms["P_ta_dE1"] + 2 * fastpt_terms["P_ta_dE2"]
     )
-    C2 = (
-        5
-        * A2
-        * C1_RHOCRIT
-        * Omega_m
-        / Dz ** 2
-        * ((1.0 + z_out) / (1.0 + z_piv)) ** alpha2
+    ta_ii_bb = cdel**2 * fastpt_terms["P_ta_BB"]
+    ta_gi = cdel * (fastpt_terms["P_ta_dE1"] + fastpt_terms["P_ta_dE2"])
+
+    tt_gi = c2 * (fastpt_terms["P_mix_A"] + fastpt_terms["P_mix_B"])
+    tt_ii_ee = c2**2 * fastpt_terms["P_tt_EE"]
+    tt_ii_bb = c2**2 * fastpt_terms["P_tt_BB"]
+
+    mix_ii_ee = 2.0 * c2 * (
+        c1 * fastpt_terms["P_mix_A"]
+        + c1 * fastpt_terms["P_mix_B"]
+        + cdel * fastpt_terms["P_mix_D_EE"]
     )
+    mix_ii_bb = 2.0 * cdel * c2 * fastpt_terms["P_mix_D_BB"]
 
-    # make all the amplitude terms (num_z, num_k).
-    # This should be compatible with the z-dependent values passed from above.
-    # C1, C2, bias_ta, bias_tt = amp_3d(C1, len(Dz), len(k_out)), amp_3d(C2, len(Dz), len(k_out)), amp_3d(bias_ta, len(Dz), len(k_out)), amp_3d(bias_tt, len(Dz), len(k_out))
-    C1 = amp_3d(C1, len(Dz), len(k_use))
-    Cdel = amp_3d(Cdel, len(Dz), len(k_use))
-    C2 = amp_3d(C2, len(Dz), len(k_use))
-
-    # Get nonlinear Pk. lin Pk is already read-in at the fast-pt k grid from the fastpt block).
-    P_IA_dict["P_nl"] = P_nl
-
-    # LA/NLA terms not included here...
-    P_IA_out = {}
-    p_ta_ii_EE = Cdel ** 2 * P_IA_dict["P_ta_EE"] + C1 * Cdel * (
-        2 * P_IA_dict["P_ta_dE1"] + 2 * P_IA_dict["P_ta_dE2"]
-    )
-    p_ta_ii_BB = Cdel ** 2 * P_IA_dict["P_ta_BB"]
-    p_ta_gi = Cdel * (P_IA_dict["P_ta_dE1"] + P_IA_dict["P_ta_dE2"])
-
-    P_IA_out["C1"] = C1
-    
-    P_IA_out["lin_II_EE"] = C1 * C1 * P_IA_dict["Plin"]
-    P_IA_out["nla_II_EE"] = C1 * C1 * P_IA_dict["P_nl"]
-    P_IA_out["lin_GI"] = C1 * P_IA_dict["Plin"]
-    P_IA_out["nla_GI"] = C1 * P_IA_dict["P_nl"]
-    P_IA_out["ta_II_EE"] = p_ta_ii_EE
-    P_IA_out["ta_II_BB"] = p_ta_ii_BB
-    P_IA_out["ta_GI"] = p_ta_gi
-
-    # TT
-    P_IA_out["tt_GI"] = C2 * (P_IA_dict["P_mix_A"] + P_IA_dict["P_mix_B"])
-    P_IA_out["tt_II_EE"] = C2 * C2 * P_IA_dict["P_tt_EE"]
-    P_IA_out["tt_II_BB"] = C2 * C2 * P_IA_dict["P_tt_BB"]
-
-    # mixed
-    p_mix_ii_EE = (
-        2.0
-        * C2
-        * (
-            C1 * P_IA_dict["P_mix_A"]
-            + C1 * P_IA_dict["P_mix_B"]
-            + Cdel * P_IA_dict["P_mix_D_EE"]
-        )
-    )
-    p_mix_ii_BB = 2.0 * Cdel * C2 * P_IA_dict["P_mix_D_BB"]
-    P_IA_out["mix_II_EE"] = p_mix_ii_EE
-    P_IA_out["mix_II_BB"] = p_mix_ii_BB
-    # factors of 2 come from cross-term combinatorics.
-    # This factor should be replaced by bin-specific (c1*c2+c2*c1), which is not currently supported by this interface.
-    # downstream bin-specific values for C1 and C2 can't currently be applied to tatt,
-    # since the output mixes up the different scalings.
-
-    return P_IA_out, k_use
+    return {
+        "k_h": k_use,
+        "nla_gi": c1 * p_nl,
+        "nla_ii_ee": c1 * c1 * p_nl,
+        "ta_gi": ta_gi,
+        "ta_ii_ee": ta_ii_ee,
+        "ta_ii_bb": ta_ii_bb,
+        "tt_gi": tt_gi,
+        "tt_ii_ee": tt_ii_ee,
+        "tt_ii_bb": tt_ii_bb,
+        "mix_ii_ee": mix_ii_ee,
+        "mix_ii_bb": mix_ii_bb,
+    }
 
 
 def setup(options):
     sub_lowk = options.get_bool(option_section, "sub_lowk", False)
-    ia_model = options.get_string(option_section, "ia_model", "nla")
+    ia_model = options.get_string(option_section, "ia_model", "nla").lower()
+    if ia_model not in SUPPORTED_IA_MODELS:
+        supported = ", ".join(sorted(SUPPORTED_IA_MODELS))
+        raise ValueError(f"Unsupported ia_model '{ia_model}'. Supported models: {supported}")
+
     name = options.get_string(option_section, "name", default="").lower()
     do_galaxy_intrinsic = options.get_bool(option_section, "do_galaxy_intrinsic", False)
-    no_IA_E = options.get_bool(option_section, "no_IA_E", False)
-    no_IA_B = options.get_bool(option_section, "no_IA_B", False)
-
-    if name:
-        suffix = "_" + name
-    else:
-        suffix = ""
-    return (
-        sub_lowk,
-        ia_model,
-        suffix,
-        do_galaxy_intrinsic,
-        no_IA_E,
-        no_IA_B,
-    )
+    no_ia_e = options.get_bool(option_section, "no_IA_E", False)
+    no_ia_b = options.get_bool(option_section, "no_IA_B", False)
+    suffix = f"_{name}" if name else ""
+    return sub_lowk, ia_model, suffix, do_galaxy_intrinsic, no_ia_e, no_ia_b
 
 
 def execute(block, config):
-    (
-        sub_lowk,
-        ia_model,
-        suffix,
-        do_galaxy_intrinsic,
-        no_IA_E,
-        no_IA_B,
-    ) = config
+    sub_lowk, ia_model, suffix, do_galaxy_intrinsic, no_ia_e, no_ia_b = config
 
-    # Load linear and non-linear matter power spectra
     lin = names.matter_power_lin
     nl = names.matter_power_nl
     cosmo = names.cosmological_parameters
     omega_m = block[cosmo, "omega_m"]
 
-    # Load the matter power spectra
     z_lin, k_lin, p_lin = block.get_grid(lin, "z", "k_h", "p_k")
     z_nl, k_nl, p_nl = block.get_grid(nl, "z", "k_h", "p_k")
 
-    # use ind to handle mild scale-dependence in growth
+    if not np.array_equal(z_nl, z_lin):
+        raise ValueError("Expected identical z values for matter power NL and Linear in IA code")
+
     ind = np.where(k_lin > 0.03)[0][0]
-    Dz = np.sqrt(p_lin[:, ind] / p_lin[0, ind])
-
-    # Re-sample nonlinear power onto same grid as linear
-    assert (
-        z_nl == z_lin
-    ).all(), "Expected identical z values for matter power NL & Linear in IA code"
-
-    # pre-factors to turn off E and B modes
-    E_factor = 0 if no_IA_E else 1
-    B_factor = 0 if no_IA_B else 1
+    growth = np.sqrt(p_lin[:, ind] / p_lin[0, ind])
 
     ia_section = "intrinsic_alignment_parameters"
+    if (ia_section, "C1") in block or (ia_section, "C2") in block:
+        raise ValueError("Deprecated TATT parameters C1/C2 are not supported")
 
-    # check for deprecated parameters
-    if (ia_section, "C1") in block:
-        raise ValueError("Deprecated TATT parameter specified: " + "C1")
-
-    if (ia_section, "C2") in block:
-        raise ValueError("Deprecated TATT parameter specified: " + "C2")
-
-    # Get main parameters - note that all are optional.
-    A1 = block.get_double(ia_section, "A1", 1.0)
-    A2 = block.get_double(ia_section, "A2", 1.0)
+    a1 = block.get_double(ia_section, "A1", 1.0)
+    a2 = block.get_double(ia_section, "A2", 1.0)
     alpha1 = block.get_double(ia_section, "alpha1", 0.0)
     alpha2 = block.get_double(ia_section, "alpha2", 0.0)
     alphadel = block.get_double(ia_section, "alphadel", alpha1)
     z_piv = block.get_double(ia_section, "z_piv", 0.0)
 
-
     if (ia_section, "Adel") in block:
         if (ia_section, "bias_ta") in block:
             raise ValueError("bias_ta is not used when Adel is specified.")
-        else:
-            Adel = block.get_double(ia_section, "Adel", 1.0)
-            bias_ta = bias_tt = 1.0
+        adel = block.get_double(ia_section, "Adel", 1.0)
     else:
-        bias_ta = block.get_double(ia_section, "bias_ta", 1.0)
-        bias_tt = block.get_double(ia_section, "bias_tt", 1.0)
-        Adel = bias_ta * A1
+        adel = block.get_double(ia_section, "bias_ta", 1.0) * a1
 
-
-
-    IA_terms, k_use = get_IA_terms(
-        block,
-        k_lin,
-        k_nl,
-        z_lin,
-        p_lin,
-        p_nl,
-        Dz,
-        A1,
-        A2,
-        Adel,
-        bias_ta,
-        bias_tt,
-        alpha1,
-        alpha2,
-        alphadel,
-        z_piv,
-        omega_m,
-        sub_lowk=sub_lowk,
+    c1, _, _ = compute_amplitudes(
+        z_lin, growth, a1, a2, adel, alpha1, alpha2, alphadel, z_piv, omega_m, len(k_nl)
     )
+    nla_gi = c1 * p_nl
+    nla_ii_ee = c1 * c1 * p_nl
 
-    ##### complete the proper IA model defintions.
-    # Linear alignment modell
-    if ia_model == "lin":
-        ii_ee_total = E_factor * IA_terms["lin_II_EE"]
-        ii_bb_total = 0.0 * IA_terms["ta_II_BB"]
-        gi_e_total = E_factor * IA_terms["lin_GI"]
+    e_factor = 0 if no_ia_e else 1
+    b_factor = 0 if no_ia_b else 1
 
-    # Non-linear linear alignment model
-    elif ia_model == "nla":
-        
-        ii_ee_total = E_factor * IA_terms["nla_II_EE"]
-        ii_bb_total = 0.0 * IA_terms["ta_II_BB"]
-        gi_e_total = E_factor * IA_terms["nla_GI"]
-
-    # Tidal alignment model
-    elif ia_model == "ta":
-        ii_ee_total = E_factor * (IA_terms["nla_II_EE"] + IA_terms["ta_II_EE"])
-        ii_bb_total = B_factor * IA_terms["ta_II_BB"]
-        gi_e_total = E_factor * (IA_terms["nla_GI"] + IA_terms["ta_GI"])
-
-    # Tidal torquing model
-    elif ia_model == "tt":
-        # In a realistic scenario, this should probably include a tidal-alignment-like
-        # term (due to renormalization)
-        ii_ee_total = E_factor * IA_terms["tt_II_EE"]
-        ii_bb_total = B_factor * IA_terms["tt_II_BB"]
-        gi_e_total = E_factor * IA_terms["tt_GI"]
-
-    # Full Tidal Alignment + Tidal Torquing
-    elif ia_model == "tatt":
-        ii_ee_total = E_factor * (
-            IA_terms["nla_II_EE"]
-            + IA_terms["ta_II_EE"]
-            + IA_terms["tt_II_EE"]
-            + IA_terms["mix_II_EE"]
-        )
-        ii_bb_total = B_factor * (
-            IA_terms["ta_II_BB"] + IA_terms["tt_II_BB"] + IA_terms["mix_II_BB"]
-        )
-        gi_e_total = E_factor * (
-            IA_terms["nla_GI"] + IA_terms["ta_GI"] + IA_terms["tt_GI"]
-        )  # no mix contribution to GI
-
-    elif ia_model == "mixed_only":
-        # not a physically sensible option, but useful for showing the extra
-        # contribution we get by considering the cross-terms....
-        ii_ee_total = E_factor * IA_terms["mix_II_EE"]
-        ii_bb_total = B_factor * IA_terms["mix_II_BB"]
-        gi_e_total = np.zeros_like(ii_ee_total)
+    if ia_model == "nla":
+        ii_ee_total = e_factor * nla_ii_ee
+        ii_bb_total = np.zeros_like(ii_ee_total)
+        gi_e_total = e_factor * nla_gi
+        k_use = k_nl
     else:
-        raise ValueError(ia_model + " is not a supported IA model")
+        terms = get_ia_terms(
+            block,
+            k_nl,
+            z_lin,
+            p_nl,
+            growth,
+            a1,
+            a2,
+            adel,
+            alpha1,
+            alpha2,
+            alphadel,
+            z_piv,
+            omega_m,
+            sub_lowk=sub_lowk,
+        )
+        ii_ee_total = e_factor * (
+            terms["nla_ii_ee"]
+            + terms["ta_ii_ee"]
+            + terms["tt_ii_ee"]
+            + terms["mix_ii_ee"]
+        )
+        ii_bb_total = b_factor * (
+            terms["ta_ii_bb"] + terms["tt_ii_bb"] + terms["mix_ii_bb"]
+        )
+        gi_e_total = e_factor * (
+            terms["nla_gi"] + terms["ta_gi"] + terms["tt_gi"]
+        )
+        k_use = terms["k_h"]
+    block.put_grid("intrinsic_power_ee" + suffix, "z", z_lin, "k_h", k_use, "p_k", ii_ee_total)
+    block.put_grid("intrinsic_power_bb" + suffix, "z", z_lin, "k_h", k_use, "p_k", ii_bb_total)
+    block.put_grid(names.matter_intrinsic_power + suffix, "z", z_lin, "k_h", k_use, "p_k", gi_e_total)
+    block.put_grid(names.intrinsic_power + suffix, "z", z_lin, "k_h", k_use, "p_k", ii_ee_total)
 
-    #  Saving results to block. Total EE and BB contributions
-    block.put_grid(
-        "intrinsic_power_ee" + suffix, "z", z_lin, "k_h", k_use, "p_k", ii_ee_total
-    )
-    block.put_grid(
-        "intrinsic_power_bb" + suffix, "z", z_lin, "k_h", k_use, "p_k", ii_bb_total
-    )
-
-    # Total GI contribution
-    block.put_grid(
-        names.matter_intrinsic_power + suffix,
-        "z",
-        z_lin,
-        "k_h",
-        k_use,
-        "p_k",
-        gi_e_total,
-    )
-
-    # We also save the EE total to intrinsic power for consistency with other modules
-    block.put_grid(
-        names.intrinsic_power + suffix, "z", z_lin, "k_h", k_use, "p_k", ii_ee_total
-    )
-
-    # If we've been told to include galaxy-intrinsic power then we
-    # need to check if the galaxy bias has already been applied to
-    # it or not. We'd prefer people not do that, apparently, so
-    # we print out some stuff if it happens.
     if do_galaxy_intrinsic:
         gm = "matter_galaxy_power" + suffix
-        z, k, p_gm = block.get_grid(gm, "z", "k_h", "p_k")
-
-        # Check that the bias has not already been applied
+        _, _, p_gm = block.get_grid(gm, "z", "k_h", "p_k")
         if p_gm.shape == p_nl.shape and np.allclose(p_gm, p_nl):
-            b_temp = 1
+            bias = 1
         else:
             print("WARNING: bias has already been applied to P_gm.")
             print("b_temp=P_gm/P_NL is being applied to P_gal_I by tatt_interface.py")
-            b_temp = p_gm / p_nl
+            bias = p_gm / p_nl
 
-
-        gal_i_total = b_temp * gi_e_total
         block.put_grid(
             names.galaxy_intrinsic_power + suffix,
             "z",
@@ -442,7 +288,7 @@ def execute(block, config):
             "k_h",
             k_use,
             "p_k",
-            gal_i_total,
+            bias * gi_e_total,
         )
 
     return 0
