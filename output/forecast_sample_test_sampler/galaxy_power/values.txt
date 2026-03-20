@@ -1,0 +1,3 @@
+_cosmosis_order_p_k = 'z_cosmosis_order_k_h'
+blin_1 = 1.74
+blin_2 = 1.74
