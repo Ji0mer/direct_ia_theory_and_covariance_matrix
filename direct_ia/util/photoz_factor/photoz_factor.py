@@ -13,7 +13,7 @@ def setup(options):
     do_gg = options.get_bool(option_section, "do_gg", default=False)
     do_pp = options.get_bool(option_section, "do_pp", default=False)
 
-    mu = options.get_double(option_section, "mu", default=-1.)
+    mu = options.get_double(option_section, "mu", default=1.0)
 
     sample_a = options.get_string(option_section, "sample_a")
     sample_b = options.get_string(option_section, "sample_b")
@@ -25,9 +25,6 @@ def execute(block, config):
 
     do_gp, do_gg, do_pp, sample_a, sample_b, mu = config
    # import pdb ; pdb.set_trace()
-
-    if (mu==-1):
-        mu = block['photoz_errors', 'mu']
     print('mu = %f'%mu)
 
     if do_gp:

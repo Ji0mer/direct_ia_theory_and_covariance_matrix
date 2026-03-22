@@ -1,33 +1,42 @@
 # Direct IA Forecast Pipeline
 
-This repository contains the project-specific CosmoSIS pipeline used to generate direct intrinsic-alignment (IA) mock data vectors, compute covariance matrices, and run forecast analyses in an echoIA-style FITS format.
+This repository contains a CosmoSIS pipeline for direct intrinsic-alignment forecast work. It can:
 
-It extends [`direct_ia_theory`](https://github.com/ssamuroff/direct_ia_theory) with:
+- generate mock projected-correlation data vectors
+- compute covariance matrices for `wgp`, `wpp`, and `wgg`
+- export FITS data products
+- run forecasts from existing FITS files
 
-- custom `n(z)` replacement utilities
-- dedicated covariance-matrix calculation code for projected IA observables
-- FITS export helpers
-- photo-z projected-correlation modules
-- cached versions of several expensive theory components
+The `direct_ia/` directory contains the theory, projection, likelihood, and utility modules required by this pipeline. These were migrated from `direct_ia_theory` so this repository can run as a self-contained workflow.
 
 Contact: Zepei Yang (`yang.zep@northeastern.edu`)
 
+## Repository layout
+
+- `direct_ia/`: migrated theory, likelihood, projection, and utility modules
+- `scripts/`: pipeline-specific modules such as `replace_nz`, covariance, FITS writing, and photo-z projections
+- `examples/`: runnable CosmoSIS configs
+- `fits_data/`: template and generated FITS files
+- `nz_data/`: redshift-distribution inputs
+- `output/`: cached inputs, intermediates, and run outputs
+
 ## Setup
 
-Edit [`setup.sh`](/projects/blazek_group_storage/zepei/ia_forecast/direct_ia_to_public/setup.sh) to match your local paths, especially:
+This README assumes you already have a working CosmoSIS environment and `cosmosis-standard-library`.
+
+Edit `setup.sh` for your machine and set:
 
 - `COSMOSIS_LIB`
 - `IA_LIB`
-- `IA_LIB1`
 - `DATA_DIR`
 
-Then source the environment:
+Then source it:
 
 ```bash
 source setup.sh
 ```
 
-The checked-in `setup.sh` is machine-specific and should be treated as a template.
+If you need to rebuild the compiled Limber projection module, see `direct_ia/projection/projected_corrs_limber/`.
 
 ## Quick start
 
@@ -37,43 +46,45 @@ Generate a spectroscopic mock:
 cosmosis examples/generate-data.ini
 ```
 
-Generate a mock with photo-z smearing:
+Generate a photo-z mock:
 
 ```bash
 cosmosis examples/generate-data-photoz.ini
 ```
 
-Run a forecast from an existing FITS data vector:
+Run a spectroscopic forecast:
 
 ```bash
 cosmosis examples/params-forecast.ini
 ```
 
-For the photometric forecast example:
+Run a photo-z forecast:
 
 ```bash
-cosmosis examples/params-generate-data-photoz.ini
+cosmosis examples/params-forecast-photoz.ini
 ```
 
-If you only want a quick smoke test, switch `sampler = test` in the relevant `.ini` file.
+For a smoke test, keep `sampler = test` in the relevant `.ini` file.
 
-## Covariance matrix pipeline
+## Inputs and configuration
 
-Covariance-matrix computation is a central part of this repository, not just a helper step. The code under [`scripts/covmat`](/projects/blazek_group_storage/zepei/ia_forecast/direct_ia_to_public/scripts/covmat) builds covariance matrices for the projected `wgp`, `wpp`, and `wgg` observables and is used directly by the mock-data generation workflow.
+The example pipelines expect local inputs already present in this repository:
 
-## Main files
+- cached power spectra and distance tables under `output/pk_fid/`
+- redshift-distribution files under `nz_data/`
+- FITS templates or existing FITS data vectors under `fits_data/`
 
-- [`examples`](/projects/blazek_group_storage/zepei/ia_forecast/direct_ia_to_public/examples): runnable CosmoSIS configs
-- [`fits_data`](/projects/blazek_group_storage/zepei/ia_forecast/direct_ia_to_public/fits_data): example and generated FITS products
-- [`nz_data`](/projects/blazek_group_storage/zepei/ia_forecast/direct_ia_to_public/nz_data): redshift-distribution inputs
-- [`output`](/projects/blazek_group_storage/zepei/ia_forecast/direct_ia_to_public/output): cached intermediates and run outputs
-- [`scripts/covmat`](/projects/blazek_group_storage/zepei/ia_forecast/direct_ia_to_public/scripts/covmat): covariance-matrix calculation for `wgp`, `wpp`, and `wgg`
-- [`scripts/makefits`](/projects/blazek_group_storage/zepei/ia_forecast/direct_ia_to_public/scripts/makefits): FITS writer
-- [`scripts/photoz`](/projects/blazek_group_storage/zepei/ia_forecast/direct_ia_to_public/scripts/photoz): photo-z projected-correlation modules
-- [`scripts/nonlinear_bias`](/projects/blazek_group_storage/zepei/ia_forecast/direct_ia_to_public/scripts/nonlinear_bias), [`scripts/projection`](/projects/blazek_group_storage/zepei/ia_forecast/direct_ia_to_public/scripts/projection), [`scripts/structure`](/projects/blazek_group_storage/zepei/ia_forecast/direct_ia_to_public/scripts/structure), [`scripts/tatt`](/projects/blazek_group_storage/zepei/ia_forecast/direct_ia_to_public/scripts/tatt): cached theory modules
+Most user changes happen in:
+
+- `examples/*.ini`
+- `examples/values-generate.ini`
+- `examples/values-forecast.ini`
+
+Typical edits include file paths, sample names, `n(z)` choices, survey area, number density, shape noise, IA parameters, bias parameters, and photo-z settings.
 
 ## Notes
 
-- The example configs assume existing power-spectrum inputs from `direct_ia_theory/output/pk_fid/`.
-- Most runtime customization happens in the files under [`examples`](/projects/blazek_group_storage/zepei/ia_forecast/direct_ia_to_public/examples).
-- Generated products and cached outputs can become large.
+- Covariance calculation is a core part of the mock-generation workflow, not a separate post-processing step.
+- The generation pipelines also run the likelihood module as a consistency check.
+- Output and cache directories can become large.
+- `direct_ia_theory` should be treated as module provenance, not as a runtime dependency for this repository.

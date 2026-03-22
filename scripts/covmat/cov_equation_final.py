@@ -33,28 +33,44 @@ def compute_c1(A1,Dz,z_out,z_piv=0,alpha1=0,Omega_m=0.3):
     C1_RHOCRIT = compute_c1_baseline()
     return -1.0*A1*C1_RHOCRIT*Omega_m/Dz*( (1.0+z_out)/(1.0+z_piv) )**alpha1
 
+def _get_covmat_param(block, defaults, name):
+    if block.has_value("covmat", name):
+        return block["covmat", name]
+    return defaults[name]
+
 def setup(options):
 
-    zeff = options.get_double(option_section, "zeff",default=0.52)
-    area_shape = options.get_double(option_section, "area_shape", default=5000.0)
-    area_dens = options.get_double(option_section, "area_dens", default=5000.0)
     sample = options.get_string(option_section,"sample",default="cmass")
-    rmin = options.get_double(option_section,"rmin",default=0.1)
-    rmax = options.get_double(option_section,"rmax",default=350.0)
-    nr = options.get_int(option_section,"nr",default=21)
-    rbins = np.logspace( np.log10(rmin),np.log10(rmax),nr )
+    defaults = {
+        "zeff": options.get_double(option_section, "zeff", default=0.52),
+        "area_shape": options.get_double(option_section, "area_shape", default=5000.0),
+        "area_dens": options.get_double(option_section, "area_dens", default=5000.0),
+        "rmin": options.get_double(option_section, "rmin", default=0.1),
+        "rmax": options.get_double(option_section, "rmax", default=350.0),
+        "nr": options.get_int(option_section, "nr", default=21),
+        "sigma_e": options.get_double(option_section, "sigma_e", default=0.25),
+        "nbar_shape": options.get_double(option_section, "nbar_shape", default=2e-4),
+        "nbar_dens": options.get_double(option_section, "nbar_dens", default=2e-4),
+    }
     nk = 10000
-    sigma_e = options.get_double(option_section,"sigma_e",default=0.25)
-    nbar_shape = options.get_double(option_section,"nbar_shape",default=2e-4)
-    Np = sigma_e**2/nbar_shape
-    nbar_dens = options.get_double(option_section,"nbar_dens",default=2e-4)
-    Ng = 1/nbar_dens
-    return zeff,area_shape,area_dens,sample,rbins,nk,Ng,Np
+    return sample, defaults, nk
 
 
 def execute(block, config):
 
-    zeff, area_shape, area_dens, sample, rbins, nk, Ng, Np = config
+    sample, defaults, nk = config
+    zeff = _get_covmat_param(block, defaults, "zeff")
+    area_shape = _get_covmat_param(block, defaults, "area_shape")
+    area_dens = _get_covmat_param(block, defaults, "area_dens")
+    rmin = _get_covmat_param(block, defaults, "rmin")
+    rmax = _get_covmat_param(block, defaults, "rmax")
+    nr = int(_get_covmat_param(block, defaults, "nr"))
+    sigma_e = _get_covmat_param(block, defaults, "sigma_e")
+    nbar_shape = _get_covmat_param(block, defaults, "nbar_shape")
+    nbar_dens = _get_covmat_param(block, defaults, "nbar_dens")
+    rbins = np.logspace(np.log10(rmin), np.log10(rmax), nr)
+    Np = sigma_e**2 / nbar_shape
+    Ng = 1 / nbar_dens
     
     h0 = block["cosmological_parameters","h0"]
     Pimax = block["LOS_bin","Pi_max"]/h0 #Mpc
@@ -94,9 +110,9 @@ def execute(block, config):
     # load n(z)
     zuse = np.linspace(1e-5,4,401)
     zs = block['nz_'+sample+"_shape", 'z']
-    nzs = block['nz_'+sample+"_shape", 'raw_all']
+    nzs = block['nz_'+sample+"_shape", 'raw']
     zd = block['nz_'+sample+"_density", 'z']
-    nzd = block['nz_'+sample+"_density", 'raw_all']
+    nzd = block['nz_'+sample+"_density", 'raw']
     
     #nzs
     nzs_interp = interp1d( zs,nzs,bounds_error=False,fill_value=0 )

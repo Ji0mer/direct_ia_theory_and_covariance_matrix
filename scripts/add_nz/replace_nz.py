@@ -17,16 +17,14 @@ def interp_func(x,y,xnew,axis=0,kind='linear'):
 def setup(options):
     sample = options.get_string(option_section,"sample")
     nz_shape = options.get_string(option_section,"nz_shape")
-    nz_shape_all = options.get_string(option_section,"nz_shape_all")
     nz_dens = options.get_string(option_section,"nz_dens")
-    nz_dens_all = options.get_string(option_section,"nz_dens_all")
     #number_bins = options.get_int(option_section,"number_bins",default = 4)
     #bins_index = options.get_int(option_section,"bins_index",default=0)
-    return sample, nz_shape, nz_dens, nz_shape_all, nz_dens_all
+    return sample, nz_shape, nz_dens
 
 
 def execute(block, config):
-    sample, nz_shape, nz_dens, nz_shape_all, nz_dens_all = config
+    sample, nz_shape, nz_dens = config
     
     #slope = 0.0
     #nzintersec = 2.0
@@ -36,20 +34,15 @@ def execute(block, config):
     z_shape_synthetic = np.load(nz_shape)["arr_0"]
     nz_shape_synthetic = np.load(nz_shape)["arr_1"]
     
-    z_shape_all_synthetic = np.load(nz_shape_all)["arr_0"]
-    nz_shape_all_synthetic = np.load(nz_shape_all)["arr_1"]
-    
     nz_shape_target = interp_func( z_shape_synthetic,nz_shape_synthetic,z_shape_target )
-    nz_shape_all_target = interp_func( z_shape_all_synthetic,nz_shape_all_synthetic,z_shape_target )
     
     block["nz_forecast_sample_shape","raw"] = nz_shape_target
     block["nz_forecast_sample_shape","z"] = z_shape_target
-    block["nz_forecast_sample_shape","raw_all"] = nz_shape_all_target
     
     nz_bin_shape_target = nz_shape_target
     #block["nz_forecast_sample_shape","raw_bin_index"] = nz_bin_shape_target
     ##### normalize nz
-    nz_bin_shape_target /= np.trapz( nz_shape_all_target,z_shape_target )
+    nz_bin_shape_target /= np.trapz( nz_shape_target,z_shape_target )
     block["nz_forecast_sample_shape","bin_1"] = nz_bin_shape_target
     
     ###
@@ -72,20 +65,15 @@ def execute(block, config):
     z_dens_synthetic = np.load(nz_dens)["arr_0"]
     nz_dens_synthetic = np.load(nz_dens)["arr_1"]
     
-    z_dens_all_synthetic = np.load(nz_dens_all)["arr_0"]
-    nz_dens_all_synthetic = np.load(nz_dens_all)["arr_1"]
-    
     nz_dens_target = interp_func( z_dens_synthetic,nz_dens_synthetic,z_dens_target )
-    nz_dens_all_target = interp_func( z_dens_all_synthetic,nz_dens_all_synthetic,z_dens_target )
     
     block["nz_forecast_sample_density","raw"] = nz_dens_target
     block["nz_forecast_sample_density","z"] = z_dens_target
-    block["nz_forecast_sample_density","raw_all"] = nz_dens_all_target
     
     nz_bin_dens_target = nz_dens_target
     #block["nz_forecast_sample_density","raw_bin_index"] = nz_bin_dens_target
     ##### normalize nz
-    nz_bin_dens_target /= np.trapz( nz_dens_all_target,z_dens_target )
+    nz_bin_dens_target /= np.trapz( nz_dens_target,z_dens_target )
     block["nz_forecast_sample_density","bin_1"] = nz_bin_dens_target
     
     ###

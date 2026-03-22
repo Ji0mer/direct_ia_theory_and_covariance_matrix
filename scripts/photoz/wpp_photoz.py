@@ -14,17 +14,19 @@ def setup(options):
     sample_b = options.get_string(option_section, "sample_b", default="forecast_sample_shape")
     constant_sigmaz = options.get_bool(option_section, "constant_sigmaz", default=True)
     timing = options.get_bool(option_section, "timing", default=True)
-    return sample_a, sample_b, timing, constant_sigmaz
+    n_pi = options.get_int(option_section, "N_pi", default=200)
+    pi_mask_max = options.get_double(option_section, "Pi_mask_max", default=-1.0)
+    return sample_a, sample_b, timing, constant_sigmaz, n_pi, pi_mask_max
 
 def execute(block, config):
-    sample_a, sample_b, timing, constant_sigmaz = config
+    sample_a, sample_b, timing, constant_sigmaz, n_pi, pi_mask_max = config
     
     if timing:
         from time import time
         T0 = time()
     
     # --- 1. Setup Grids ---
-    Npi = block['photoz_errors','N_pi']
+    Npi = n_pi
     Nz = 200
     Pi = np.linspace(-block['LOS_bin','Pi_max'], block['LOS_bin','Pi_max'], Npi)
     z_low = np.linspace(0.01, 4.00, Nz)
@@ -109,7 +111,7 @@ def execute(block, config):
     # Integrate Kernel over Pi axis HERE.
     # Reduces shape from (Nz, Npi, 400) -> (Nz, 400)
     # Effectively calculating: Integrated_Window(z, chi)
-    Pi_max = block['photoz_errors','Pi_mask_max']
+    Pi_max = block['LOS_bin', 'Pi_max'] if pi_mask_max < 0.0 else pi_mask_max
     pi_mask = (Pi >= -Pi_max) & (Pi <= Pi_max)
     
     # Only integrate over the valid Pi range
