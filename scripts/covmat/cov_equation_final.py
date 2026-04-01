@@ -33,6 +33,15 @@ def compute_c1(A1,Dz,z_out,z_piv=0,alpha1=0,Omega_m=0.3):
     C1_RHOCRIT = compute_c1_baseline()
     return -1.0*A1*C1_RHOCRIT*Omega_m/Dz*( (1.0+z_out)/(1.0+z_piv) )**alpha1
 
+def get_pz_from_nz( z,nz,area,cosmo=Planck13.clone(H0=69) ):
+    chi = cosmo.comoving_distance( z )
+    dchidz = np.gradient( chi,z )
+    N = np.trapz( area*chi**2*dchidz*nz,z )
+    n2d = N / area
+    pz = nz/n2d * chi**2*dchidz
+    pz /= np.trapz( pz,z )
+    return pz
+
 def _get_covmat_param(block, defaults, name):
     if block.has_value("covmat", name):
         return block["covmat", name]
@@ -117,9 +126,11 @@ def execute(block, config):
     #nzs
     nzs_interp = interp1d( zs,nzs,bounds_error=False,fill_value=0 )
     nzs = nzs_interp( zuse )
+    nzs = get_pz_from_nz( zuse,nzs,omega_shape,cosmo )
     # nzd
     nzd_interp = interp1d( zd,nzd,bounds_error=False,fill_value=0 )
     nzd = nzd_interp( zuse )
+    nzd = get_pz_from_nz( zuse,nzd,omega_dens,cosmo )
     # survey index where nz > 0
     survey_index = np.where( nzd > 0 )[0]
     print(survey_index)
