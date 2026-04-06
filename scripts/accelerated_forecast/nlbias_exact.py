@@ -1,15 +1,29 @@
-# coding:utf-8
 import os
+import sys
 
+import numpy as np
 from cosmosis.datablock import option_section
 
+MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
+NONLINEAR_BIAS_DIR = os.path.abspath(os.path.join(MODULE_DIR, "..", "nonlinear_bias"))
+for path in (MODULE_DIR, NONLINEAR_BIAS_DIR):
+    if path not in sys.path:
+        sys.path.insert(0, path)
+
+from cache_utils import build_cache_key, cache_file, ensure_dir
 from fastpt_tools import get_PXX, get_PXm, get_Pk_basis_funcs, get_bias_params_bin
 
 
-def folder_has_files(folder_path):
-    return os.path.isdir(folder_path) and any(
-        os.path.isfile(os.path.join(folder_path, name)) for name in os.listdir(folder_path)
-    )
+TERM_NAMES = {
+    "Pnl": "Pk1_Pd1d1.npz",
+    "Pd1d2": "Pk2_Pd1d2.npz",
+    "Pd2d2": "Pk3_Pd2d2.npz",
+    "Pd1s2": "Pk4_Pd1s2.npz",
+    "Pd2s2": "Pk5_Pd2s2.npz",
+    "Ps2s2": "Pk6_Ps2s2.npz",
+    "sig3nl": "Pk7_sig3nl.npz",
+    "k2P": "Pk8_k2P.npz",
+}
 
 
 def parse_sample_pairs(option_value):
@@ -30,30 +44,6 @@ def load_bias(block, sample, pt_type):
     return bias_values, lin_bias_values
 
 
-def maybe_save_pk_terms(pks_folder, basis_funcs):
-    if folder_has_files(pks_folder):
-        return
-
-    os.makedirs(pks_folder, exist_ok=True)
-    term_names = {
-        "Pk1_Pd1d1.npz": "Pnl",
-        "Pk2_Pd1d2.npz": "Pd1d2",
-        "Pk3_Pd2d2.npz": "Pd2d2",
-        "Pk4_Pd1s2.npz": "Pd1s2",
-        "Pk5_Pd2s2.npz": "Pd2s2",
-        "Pk6_Ps2s2.npz": "Ps2s2",
-        "Pk7_sig3nl.npz": "sig3nl",
-        "Pk8_k2P.npz": "k2P",
-    }
-    for filename, key in term_names.items():
-        path = os.path.join(pks_folder, filename)
-        if not os.path.exists(path):
-            # Match the original cache format used by legendre_interface.py.
-            import numpy as np
-
-            np.savez(path, basis_funcs[key])
-
-
 def set_linear_bias_aliases(block, samples, lin_bias_prefix):
     for sample in samples:
         block["bias_parameters", "%s_%s" % (lin_bias_prefix, sample)] = block[
@@ -61,7 +51,55 @@ def set_linear_bias_aliases(block, samples, lin_bias_prefix):
         ]
 
 
-def build_galaxy_power(block, sample_a, sample_b, pt_type, pks_folder, basis_funcs):
+def save_legacy_pk_terms(pks_folder, basis_funcs):
+    ensure_dir(pks_folder)
+    for key, filename in TERM_NAMES.items():
+        path = os.path.join(pks_folder, filename)
+        if not os.path.exists(path):
+            np.savez(path, basis_funcs[key])
+
+
+def cache_root_from_file(cache_path):
+    return os.path.splitext(cache_path)[0]
+
+
+def save_basis_cache(cache_root, basis_funcs, k_nl_bias):
+    ensure_dir(cache_root)
+    np.save(os.path.join(cache_root, "k_nl_bias.npy"), k_nl_bias)
+    for key, value in basis_funcs.items():
+        np.save(os.path.join(cache_root, f"{key}.npy"), value)
+
+
+def load_basis_cache(cache_root):
+    basis_funcs = {}
+    for key in TERM_NAMES:
+        basis_funcs[key] = np.load(os.path.join(cache_root, f"{key}.npy"), mmap_mode="r")
+    k_nl_bias = np.load(os.path.join(cache_root, "k_nl_bias.npy"), mmap_mode="r")
+    return k_nl_bias, basis_funcs
+
+
+def load_or_build_basis_cache(block, config):
+    z_lin, k_lin, p_lin = block.get_grid("matter_power_lin", "z", "k_h", "p_k")
+    z_nl, k_nl, p_nl = block.get_grid("matter_power_nl", "z", "k_h", "p_k")
+
+    cache_key = build_cache_key(
+        ["nlbias_exact", config["pt_type"], z_lin, k_lin, p_lin, z_nl, k_nl, p_nl]
+    )
+    cache_path = cache_file(config["basis_cache_dir"], "nlbias_basis", cache_key)
+    cache_root = cache_root_from_file(cache_path)
+
+    if os.path.isdir(cache_root):
+        return load_basis_cache(cache_root)
+
+    k_nl_bias, basis_funcs = get_Pk_basis_funcs(
+        block, config["pt_type"], output_nl_grid=True
+    )
+    save_basis_cache(cache_root, basis_funcs, k_nl_bias)
+    save_legacy_pk_terms(config["pks_folder"], basis_funcs)
+    return load_basis_cache(cache_root)
+
+
+def build_galaxy_power(block, sample_a, sample_b, pt_type, basis_funcs):
     bias_values_a, lin_bias_values_a = load_bias(block, sample_a, pt_type)
     if sample_a == sample_b:
         bias_values_b = bias_values_a
@@ -83,16 +121,8 @@ def build_galaxy_power(block, sample_a, sample_b, pt_type, pks_folder, basis_fun
         bias_values_b[1]["b3nlE"],
         bias_values_b[1]["bkE"],
     ]
-    block["galaxy_power", "Pnl"] = basis_funcs["Pnl"]
-    block["galaxy_power", "Pd1d2"] = basis_funcs["Pd1d2"]
-    block["galaxy_power", "Pd2d2"] = basis_funcs["Pd2d2"]
-    block["galaxy_power", "Pd1s2"] = basis_funcs["Pd1s2"]
-    block["galaxy_power", "Pd2s2"] = basis_funcs["Pd2s2"]
-    block["galaxy_power", "Ps2s2"] = basis_funcs["Ps2s2"]
-    block["galaxy_power", "sig3nl"] = basis_funcs["sig3nl"]
-    block["galaxy_power", "k2P"] = basis_funcs["k2P"]
-
-    maybe_save_pk_terms(pks_folder, basis_funcs)
+    for key in TERM_NAMES:
+        block["galaxy_power", key] = basis_funcs[key]
 
     p_gg, _ = get_PXX(bias_values_a[1], bias_values_b[1], basis_funcs, pt_type)
     blin_1 = lin_bias_values_a[1]
@@ -127,17 +157,23 @@ def build_matter_galaxy_power(block, sample_a, pt_type, basis_funcs):
         "matter_power_nl",
         "_cosmosis_order_p_k",
     ]
-
-    # Keep the original side-effect keys used downstream.
     block["galaxy_power", "blin_1"] = lin_bias_values_a[1]
 
 
 def setup(options):
     pks_folder = options.get_string(option_section, "pks_folder")
-    os.makedirs(pks_folder, exist_ok=True)
+    basis_cache_dir = options.get_string(
+        option_section, "basis_cache_dir", default=os.path.join(pks_folder, "basis_exact")
+    )
+    ensure_dir(pks_folder)
+    ensure_dir(basis_cache_dir)
 
     return {
         "pks_folder": pks_folder,
+        "basis_cache_dir": basis_cache_dir,
+        "reuse_loaded_basis": options.get_bool(
+            option_section, "reuse_loaded_basis", default=False
+        ),
         "lin_bias_prefix": options.get_string(option_section, "lin_bias_prefix", "b"),
         "pt_type": options.get_string(option_section, "pt_type", "oneloop_eul_bk"),
         "nlgal_nlgal_pairs": parse_sample_pairs(
@@ -160,27 +196,19 @@ def execute(block, config):
         density_samples.add(sample_a)
     set_linear_bias_aliases(block, density_samples, config["lin_bias_prefix"])
 
-    needs_fastpt = bool(config["nlgal_nlgal_pairs"] or config["nlgal_shear_pairs"])
-    if not needs_fastpt:
+    if not (config["nlgal_nlgal_pairs"] or config["nlgal_shear_pairs"]):
         return 0
 
-    k_nl_bias, basis_funcs = get_Pk_basis_funcs(
-        block, config["pt_type"], output_nl_grid=True
-    )
-
-    # Match the original nlbias output k grid.
-    if k_nl_bias.shape == block["matter_power_nl", "k_h"].shape:
-        pass
+    if config["reuse_loaded_basis"] and "_loaded_basis" in config:
+        _, basis_funcs = config["_loaded_basis"]
+    else:
+        loaded_basis = load_or_build_basis_cache(block, config)
+        if config["reuse_loaded_basis"]:
+            config["_loaded_basis"] = loaded_basis
+        _, basis_funcs = loaded_basis
 
     for sample_a, sample_b in config["nlgal_nlgal_pairs"]:
-        build_galaxy_power(
-            block,
-            sample_a,
-            sample_b,
-            config["pt_type"],
-            config["pks_folder"],
-            basis_funcs,
-        )
+        build_galaxy_power(block, sample_a, sample_b, config["pt_type"], basis_funcs)
 
     for sample_a, _ in config["nlgal_shear_pairs"]:
         build_matter_galaxy_power(block, sample_a, config["pt_type"], basis_funcs)
