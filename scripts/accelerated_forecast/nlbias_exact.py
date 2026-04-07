@@ -10,7 +10,15 @@ for path in (MODULE_DIR, NONLINEAR_BIAS_DIR):
     if path not in sys.path:
         sys.path.insert(0, path)
 
-from cache_utils import build_cache_key, cache_file, ensure_dir
+from cache_utils import (
+    atomic_save_npz,
+    build_cache_dir,
+    build_cache_key,
+    cache_file,
+    cleanup_incomplete_cache_dir,
+    ensure_dir,
+    is_complete_cache_dir,
+)
 from fastpt_tools import get_PXX, get_PXm, get_Pk_basis_funcs, get_bias_params_bin
 
 
@@ -56,7 +64,7 @@ def save_legacy_pk_terms(pks_folder, basis_funcs):
     for key, filename in TERM_NAMES.items():
         path = os.path.join(pks_folder, filename)
         if not os.path.exists(path):
-            np.savez(path, basis_funcs[key])
+            atomic_save_npz(path, basis_funcs[key])
 
 
 def cache_root_from_file(cache_path):
@@ -65,9 +73,18 @@ def cache_root_from_file(cache_path):
 
 def save_basis_cache(cache_root, basis_funcs, k_nl_bias):
     ensure_dir(cache_root)
-    np.save(os.path.join(cache_root, "k_nl_bias.npy"), k_nl_bias)
+    with open(os.path.join(cache_root, "k_nl_bias.npy"), "wb") as handle:
+        np.save(handle, k_nl_bias, allow_pickle=False)
     for key, value in basis_funcs.items():
-        np.save(os.path.join(cache_root, f"{key}.npy"), value)
+        with open(os.path.join(cache_root, f"{key}.npy"), "wb") as handle:
+            np.save(handle, value, allow_pickle=False)
+
+
+def build_basis_cache(cache_root, block, config):
+    k_nl_bias, basis_funcs = get_Pk_basis_funcs(
+        block, config["pt_type"], output_nl_grid=True
+    )
+    save_basis_cache(cache_root, basis_funcs, k_nl_bias)
 
 
 def load_basis_cache(cache_root):
@@ -87,16 +104,21 @@ def load_or_build_basis_cache(block, config):
     )
     cache_path = cache_file(config["basis_cache_dir"], "nlbias_basis", cache_key)
     cache_root = cache_root_from_file(cache_path)
+    required_files = ["k_nl_bias.npy"] + [f"{key}.npy" for key in TERM_NAMES]
 
-    if os.path.isdir(cache_root):
-        return load_basis_cache(cache_root)
+    if is_complete_cache_dir(cache_root, required_files):
+        loaded_basis = load_basis_cache(cache_root)
+        save_legacy_pk_terms(config["pks_folder"], loaded_basis[1])
+        return loaded_basis
 
-    k_nl_bias, basis_funcs = get_Pk_basis_funcs(
-        block, config["pt_type"], output_nl_grid=True
+    build_cache_dir(
+        cache_root,
+        lambda root: build_basis_cache(root, block, config),
+        required_files=required_files,
     )
-    save_basis_cache(cache_root, basis_funcs, k_nl_bias)
-    save_legacy_pk_terms(config["pks_folder"], basis_funcs)
-    return load_basis_cache(cache_root)
+    loaded_basis = load_basis_cache(cache_root)
+    save_legacy_pk_terms(config["pks_folder"], loaded_basis[1])
+    return loaded_basis
 
 
 def build_galaxy_power(block, sample_a, sample_b, pt_type, basis_funcs):

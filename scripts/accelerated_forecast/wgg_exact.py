@@ -15,7 +15,13 @@ for path in (MODULE_DIR, PROJECTION_DIR):
     if path not in sys.path:
         sys.path.insert(0, path)
 
-from cache_utils import build_cache_key, cache_file, ensure_dir
+from cache_utils import (
+    build_cache_dir,
+    build_cache_key,
+    cache_file,
+    ensure_dir,
+    is_complete_cache_dir,
+)
 from legendre_interface import Projected_Corr_RSD, get_redshift_kernel, interp_power
 
 
@@ -30,6 +36,11 @@ TERM_FILES = (
     "Pk7_sig3nl.npz",
     "Pk8_k2P.npz",
 )
+PROJECTED_TERM_FILES = {
+    "base_terms": "base_terms.npy",
+    "linear_terms": "linear_terms.npy",
+    "quadratic_terms": "quadratic_terms.npy",
+}
 
 
 def return_pk_terms(bv1, bv2):
@@ -81,13 +92,28 @@ def cache_root_from_file(cache_path):
 def save_xi_cache(cache_root, xi_terms):
     ensure_dir(cache_root)
     for ell in MULTIPOLES:
-        np.save(os.path.join(cache_root, f"xi{ell}_terms.npy"), xi_terms[ell])
+        with open(os.path.join(cache_root, f"xi{ell}_terms.npy"), "wb") as handle:
+            np.save(handle, xi_terms[ell], allow_pickle=False)
 
 
 def load_xi_cache(cache_root):
     return {
         ell: np.load(os.path.join(cache_root, f"xi{ell}_terms.npy"), mmap_mode="r")
         for ell in MULTIPOLES
+    }
+
+
+def save_projected_cache(cache_root, projected_terms):
+    ensure_dir(cache_root)
+    for key, filename in PROJECTED_TERM_FILES.items():
+        with open(os.path.join(cache_root, filename), "wb") as handle:
+            np.save(handle, projected_terms[key], allow_pickle=False)
+
+
+def load_projected_cache(cache_root):
+    return {
+        key: np.load(os.path.join(cache_root, filename), mmap_mode="r")
+        for key, filename in PROJECTED_TERM_FILES.items()
     }
 
 
@@ -102,6 +128,48 @@ def build_xi_cache(X, k, z, pk_terms, knew, z1, fz, ba, bb):
     for ell in MULTIPOLES:
         xi_terms[ell] = np.stack(xi_terms[ell], axis=0)
     return xi_terms
+
+
+def build_projected_terms(xi_terms, z1, fz, w_kernel):
+    norm = sint.trapz(w_kernel, z1)
+    w0 = w_kernel[np.newaxis, :, np.newaxis]
+    w1 = (fz * w_kernel)[np.newaxis, :, np.newaxis]
+    w2 = (fz * fz * w_kernel)[np.newaxis, :, np.newaxis]
+
+    xi0 = np.asarray(xi_terms[0])
+    xi2 = np.asarray(xi_terms[2])
+    xi4 = np.asarray(xi_terms[4])
+
+    return {
+        "base_terms": sint.trapz(xi0 * w0, z1, axis=1) / norm,
+        "linear_terms": sint.trapz(((1.0 / 3.0) * xi0 + (2.0 / 3.0) * xi2) * w1, z1, axis=1)
+        / norm,
+        "quadratic_terms": sint.trapz(
+            ((1.0 / 5.0) * xi0 + (4.0 / 7.0) * xi2 + (8.0 / 35.0) * xi4) * w2,
+            z1,
+            axis=1,
+        )
+        / norm,
+    }
+
+
+def get_projected_cache_key(block, xi_cache_key, z1, fz, sample_a, sample_b):
+    return build_cache_key(
+        [
+            "wgg_projected",
+            xi_cache_key,
+            sample_a,
+            sample_b,
+            z1,
+            fz,
+            block["distances", "z"],
+            block["distances", "d_m"],
+            block["nz_%s" % sample_a, "z"],
+            block["nz_%s" % sample_a, "bin_1"],
+            block["nz_%s" % sample_b, "z"],
+            block["nz_%s" % sample_b, "bin_1"],
+        ]
+    )
 
 
 def setup(options):
@@ -122,8 +190,14 @@ def setup(options):
     xi_cache_dir = options.get_string(
         option_section, "xi_cache_dir", default=os.path.join(wgg_folder, "exact_xi")
     )
+    projected_cache_dir = options.get_string(
+        option_section,
+        "projected_cache_dir",
+        default=os.path.join(xi_cache_dir, "projected"),
+    )
     ensure_dir(wgg_folder)
     ensure_dir(xi_cache_dir)
+    ensure_dir(projected_cache_dir)
     return (
         sample_a,
         sample_b,
@@ -136,6 +210,7 @@ def setup(options):
         do_magnification,
         pks_folder,
         xi_cache_dir,
+        projected_cache_dir,
         options.get_bool(option_section, "reuse_loaded_xi", default=False),
     )
 
@@ -153,6 +228,7 @@ def execute(block, config):
         do_magnification,
         pks_folder,
         xi_cache_dir,
+        projected_cache_dir,
         reuse_loaded_xi,
     ) = config
 
@@ -161,7 +237,6 @@ def execute(block, config):
 
     k = block["galaxy_power", "k_h"]
     knew = np.logspace(np.log10(0.001), np.log10(k.max()), nk)
-    X = Projected_Corr_RSD(rp=rp, pi_max=pimax, k=knew, lowring=True)
 
     if do_rsd:
         z1 = block["growth_parameters", "z"]
@@ -199,43 +274,75 @@ def execute(block, config):
         cache_key = build_cache_key([rp, z1, knew, pimax, term_mtimes])
         cache_path = cache_file(xi_cache_dir, "wgg_exact", cache_key)
         cache_root = cache_root_from_file(cache_path)
+        xi_required_files = [f"xi{ell}_terms.npy" for ell in MULTIPOLES]
 
-        loaded_xi_by_root = getattr(execute, "_loaded_xi_by_root", {})
-        if reuse_loaded_xi and cache_root in loaded_xi_by_root:
-            xi_terms = loaded_xi_by_root[cache_root]
+        projected_key = get_projected_cache_key(block, cache_key, z1, fz, s1, s2)
+        projected_path = cache_file(projected_cache_dir, "wgg_projected", projected_key)
+        projected_root = cache_root_from_file(projected_path)
+        projected_required_files = list(PROJECTED_TERM_FILES.values())
+
+        loaded_projected_by_root = getattr(execute, "_loaded_projected_by_root", {})
+        if reuse_loaded_xi and projected_root in loaded_projected_by_root:
+            projected_terms = loaded_projected_by_root[projected_root]
         else:
-            if os.path.isdir(cache_root):
-                xi_terms = load_xi_cache(cache_root)
+            if is_complete_cache_dir(projected_root, projected_required_files):
+                projected_terms = load_projected_cache(projected_root)
             else:
-                xi_terms = build_xi_cache(
-                    X, k, z, load_pk_terms(pks_folder), knew, z1, fz, ba, bb
+                loaded_xi_by_root = getattr(execute, "_loaded_xi_by_root", {})
+                if reuse_loaded_xi and cache_root in loaded_xi_by_root:
+                    xi_terms = loaded_xi_by_root[cache_root]
+                else:
+                    if is_complete_cache_dir(cache_root, xi_required_files):
+                        xi_terms = load_xi_cache(cache_root)
+                    else:
+                        build_cache_dir(
+                            cache_root,
+                            lambda root: save_xi_cache(
+                                root,
+                                build_xi_cache(
+                                    Projected_Corr_RSD(rp=rp, pi_max=pimax, k=knew, lowring=True),
+                                    k,
+                                    z,
+                                    load_pk_terms(pks_folder),
+                                    knew,
+                                    z1,
+                                    fz,
+                                    ba,
+                                    bb,
+                                ),
+                            ),
+                            required_files=xi_required_files,
+                        )
+                        xi_terms = load_xi_cache(cache_root)
+                    if reuse_loaded_xi:
+                        loaded_xi_by_root[cache_root] = xi_terms
+                        execute._loaded_xi_by_root = loaded_xi_by_root
+
+                _, w_kernel = get_redshift_kernel(
+                    block, 0, 0, z1, block["distances", "d_m"], s1, s2
                 )
-                save_xi_cache(cache_root, xi_terms)
-                xi_terms = load_xi_cache(cache_root)
+                build_cache_dir(
+                    projected_root,
+                    lambda root: save_projected_cache(
+                        root, build_projected_terms(xi_terms, z1, fz, w_kernel)
+                    ),
+                    required_files=projected_required_files,
+                )
+                projected_terms = load_projected_cache(projected_root)
+
             if reuse_loaded_xi:
-                loaded_xi_by_root[cache_root] = xi_terms
-                execute._loaded_xi_by_root = loaded_xi_by_root
+                loaded_projected_by_root[projected_root] = projected_terms
+                execute._loaded_projected_by_root = loaded_projected_by_root
 
-        xisum = {}
-        for ell in MULTIPOLES:
-            xisum[ell] = np.tensordot(coeffs, xi_terms[ell], axes=(0, 0)) / blin_1 / blin_2
-
-        beta1 = fz / ba
-        beta2 = fz / bb
-        W = (
-            (xisum[0].T * X.alpha(0, beta1, beta2) * ba * bb).T
-            + (xisum[2].T * X.alpha(2, beta1, beta2) * ba * bb).T
-            + (xisum[4].T * X.alpha(4, beta1, beta2) * ba * bb).T
-        )
-
-        _, W_kernel = get_redshift_kernel(
-            block, 0, 0, z1, block["distances", "d_m"], s1, s2
-        )
-        W_flat = sint.trapz(W * W_kernel[:, np.newaxis], z1, axis=0) / sint.trapz(W_kernel, z1)
+        coeffs = coeffs / blin_1 / blin_2
+        base = np.tensordot(coeffs, projected_terms["base_terms"], axes=(0, 0))
+        linear = np.tensordot(coeffs, projected_terms["linear_terms"], axes=(0, 0))
+        quadratic = np.tensordot(coeffs, projected_terms["quadratic_terms"], axes=(0, 0))
+        W_flat = ba * bb * base + (ba + bb) * linear + quadratic
         block.put_double_array_1d("galaxy_w", "w_rp_1_1_%s_%s" % (s1, s2), W_flat)
         try:
-            block.put_double_array_1d("galaxy_w", "r_p", X.rp)
+            block.put_double_array_1d("galaxy_w", "r_p", rp)
         except Exception:
-            block.replace_double_array_1d("galaxy_w", "r_p", X.rp)
+            block.replace_double_array_1d("galaxy_w", "r_p", rp)
 
     return 0

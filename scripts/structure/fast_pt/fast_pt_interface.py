@@ -21,6 +21,8 @@ from fastpt.P_extend import k_extend
 import numpy as np
 from time import time
 import os
+import shutil
+import time as walltime
 
 # hack because fastpt not yet updated for numpy 1.24
 if not hasattr(np, 'int'):
@@ -31,9 +33,95 @@ from scipy.interpolate import InterpolatedUnivariateSpline as intspline
 #import matplotlib as plt
 
 
+FASTPT_CACHE_READY = ".cache_ready"
+FASTPT_LOCK_SUFFIX = ".lock"
+FASTPT_LOCK_STALE_SECONDS = 7200
+FASTPT_LOCK_POLL_SECONDS = 0.1
+FASTPT_CACHE_FILES = (
+    "z.npz",
+    "k_h.npz",
+    "Plin.npz",
+    "P_tt_EE.npz",
+    "P_tt_BB.npz",
+    "P_ta_dE1.npz",
+    "P_ta_dE2.npz",
+    "P_ta_EE.npz",
+    "P_ta_BB.npz",
+    "P_mix_A.npz",
+    "P_mix_B.npz",
+    "P_mix_D_EE.npz",
+    "P_mix_D_BB.npz",
+)
+
+
 def folder_has_files(folder_path):
     
     return any(os.path.isfile(os.path.join(folder_path, f)) for f in os.listdir(folder_path))
+
+
+def fastpt_ready_path(folder_path):
+    return os.path.join(folder_path, FASTPT_CACHE_READY)
+
+
+def fastpt_lock_path(folder_path):
+    return folder_path.rstrip("/\\") + FASTPT_LOCK_SUFFIX
+
+
+def is_complete_fastpt_cache(folder_path):
+    if not os.path.isdir(folder_path):
+        return False
+    if not os.path.exists(fastpt_ready_path(folder_path)):
+        return False
+    return all(os.path.exists(os.path.join(folder_path, name)) for name in FASTPT_CACHE_FILES)
+
+
+def cleanup_incomplete_fastpt_cache(folder_path):
+    if os.path.isdir(folder_path) and not is_complete_fastpt_cache(folder_path):
+        shutil.rmtree(folder_path, ignore_errors=True)
+
+
+def clear_stale_fastpt_lock(lock_path):
+    if not os.path.isdir(lock_path):
+        return False
+    try:
+        lock_age = walltime.time() - os.path.getmtime(lock_path)
+    except OSError:
+        return False
+    if lock_age < FASTPT_LOCK_STALE_SECONDS:
+        return False
+    shutil.rmtree(lock_path, ignore_errors=True)
+    return True
+
+
+def ensure_fastpt_cache(block, config):
+    folder_path = config["fastpt_folder"]
+    if is_complete_fastpt_cache(folder_path):
+        return
+
+    os.makedirs(os.path.dirname(folder_path.rstrip("/\\")), exist_ok=True)
+    lock_path = fastpt_lock_path(folder_path)
+    while True:
+        if is_complete_fastpt_cache(folder_path):
+            return
+        try:
+            os.mkdir(lock_path)
+            break
+        except FileExistsError:
+            if clear_stale_fastpt_lock(lock_path):
+                continue
+            walltime.sleep(FASTPT_LOCK_POLL_SECONDS)
+
+    try:
+        if is_complete_fastpt_cache(folder_path):
+            return
+        cleanup_incomplete_fastpt_cache(folder_path)
+        os.makedirs(folder_path, exist_ok=True)
+        init_execute(block, config)
+        with open(fastpt_ready_path(folder_path), "w", encoding="utf-8") as handle:
+            handle.write("ok\n")
+    finally:
+        if os.path.isdir(lock_path):
+            shutil.rmtree(lock_path, ignore_errors=True)
 
 def setup(options):
     do_dd_spt = options.get_bool(option_section, 'do_dd_spt', False)
@@ -100,11 +188,10 @@ def setup(options):
     return config
 
 def execute(block,config):
-    if folder_has_files(config["fastpt_folder"]) == False:
-        init_execute(block,config)
-    else:
-        #init_execute(block,config)
-        repeat_execute(block,config)
+    if config['do_fastpt'] == False:
+        return 0
+    ensure_fastpt_cache(block, config)
+    repeat_execute(block,config)
     return 0
 
 def repeat_execute(block,config):

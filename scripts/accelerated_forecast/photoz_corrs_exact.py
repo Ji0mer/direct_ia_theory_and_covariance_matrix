@@ -12,7 +12,13 @@ MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 if MODULE_DIR not in sys.path:
     sys.path.insert(0, MODULE_DIR)
 
-from cache_utils import build_cache_key, cache_file, ensure_dir
+from cache_utils import (
+    build_cache_dir,
+    build_cache_key,
+    cache_file,
+    ensure_dir,
+    is_complete_cache_dir,
+)
 
 
 clight = 299792.4580
@@ -257,7 +263,8 @@ def cache_dir_from_file(cache_path):
 def save_cache_arrays(cache_root, cache):
     ensure_dir(cache_root)
     for key, value in cache.items():
-        np.save(os.path.join(cache_root, f"{key}.npy"), value)
+        with open(os.path.join(cache_root, f"{key}.npy"), "wb") as handle:
+            np.save(handle, value, allow_pickle=False)
 
 
 def load_cache_arrays(cache_root):
@@ -291,18 +298,43 @@ def load_or_build_cache(block, config):
     )
     cache_path = cache_file(config["cache_dir"], "photoz_exact", cache_key)
     cache_root = cache_dir_from_file(cache_path)
+    required_files = [
+        "z_low.npy",
+        "zf.npy",
+        "chi.npy",
+        "z_distance.npy",
+        "chi_distance.npy",
+        "az_projected.npy",
+        "weights.npy",
+        "rp.npy",
+        "ell_gp.npy",
+        "ell_pp.npy",
+        "ell_gg.npy",
+        "chi_safe.npy",
+        "window_density_density.npy",
+        "window_density_shape.npy",
+        "window_shape_shape.npy",
+        "hankel_wgp.npy",
+        "hankel_wpp.npy",
+        "hankel_wgg.npy",
+    ]
 
-    if os.path.isdir(cache_root):
+    if is_complete_cache_dir(cache_root, required_files):
         return load_cache_arrays(cache_root)
 
-    if os.path.exists(cache_path):
-        data = np.load(cache_path, allow_pickle=False)
-        cache = {key: data[key] for key in data.files}
-        save_cache_arrays(cache_root, cache)
-        return load_cache_arrays(cache_root)
+    def write_cache(root):
+        if os.path.exists(cache_path):
+            data = np.load(cache_path, allow_pickle=False)
+            cache = {key: data[key] for key in data.files}
+        else:
+            cache = build_cached_operators(block, config)
+        save_cache_arrays(root, cache)
 
-    cache = build_cached_operators(block, config)
-    save_cache_arrays(cache_root, cache)
+    build_cache_dir(
+        cache_root,
+        write_cache,
+        required_files=required_files,
+    )
     return load_cache_arrays(cache_root)
 
 

@@ -15,7 +15,12 @@ for path in (MODULE_DIR, NONLINEAR_BIAS_DIR, TATT_DIR):
     if path not in sys.path:
         sys.path.insert(0, path)
 
-from cache_utils import build_cache_key, cache_file
+from cache_utils import (
+    build_cache_dir,
+    build_cache_key,
+    cache_file,
+    is_complete_cache_dir,
+)
 from fastpt_tools import get_bias_params_bin
 from photoz_corrs_exact import cache_dir_from_file, load_cache_arrays, save_cache_arrays
 from tatt_interface import FASTPT_KEYS, PkInterp, compute_amplitudes, grow
@@ -28,6 +33,34 @@ GM_TERM_SPECS = (
     ("sig3nl", "sig3nl"),
     ("k2P", "k2P"),
 )
+
+
+def template_cache_files(block, config):
+    density_sample = config["density_sample"]
+    shape_sample = config["shape_sample"]
+    nbin_a = block["nz_%s" % density_sample, "nbin"]
+    nbin_b = block["nz_%s" % shape_sample, "nbin"]
+
+    files = ["k_h.npy"]
+    for i in range(1, nbin_a + 1):
+        for j in range(1, nbin_b + 1):
+            for coeff_name, _ in GM_TERM_SPECS:
+                files.append(f"gp_nla_{i}_{j}_{coeff_name}.npy")
+                if config["ia_model"] == "tatt":
+                    files.append(f"gp_ta_{i}_{j}_{coeff_name}.npy")
+                    files.append(f"gp_tt_{i}_{j}_{coeff_name}.npy")
+            files.append(f"pp_nla_{j}_{j}.npy")
+            if config["ia_model"] == "tatt":
+                files.extend(
+                    [
+                        f"pp_ta_ee_{j}_{j}.npy",
+                        f"pp_ta_cross_{j}_{j}.npy",
+                        f"pp_tt_ee_{j}_{j}.npy",
+                        f"pp_mix_ab_{j}_{j}.npy",
+                        f"pp_mix_d_{j}_{j}.npy",
+                    ]
+                )
+    return files
 
 
 def setup(options):
@@ -334,10 +367,14 @@ def load_or_build_templates(block, config, profiles):
         config["template_cache_dir"], "projected_ia_templates", cache_key
     )
     cache_root = cache_dir_from_file(cache_path)
-    if os.path.isdir(cache_root):
+    required_files = template_cache_files(block, config)
+    if is_complete_cache_dir(cache_root, required_files):
         return load_templates(cache_root)
-    templates = build_templates(block, config, profiles)
-    save_cache_arrays(cache_root, templates)
+    build_cache_dir(
+        cache_root,
+        lambda root: save_cache_arrays(root, build_templates(block, config, profiles)),
+        required_files=required_files,
+    )
     return load_templates(cache_root)
 
 

@@ -13,7 +13,12 @@ for path in (MODULE_DIR, NONLINEAR_BIAS_DIR, TATT_DIR):
     if path not in sys.path:
         sys.path.insert(0, path)
 
-from cache_utils import build_cache_key, cache_file
+from cache_utils import (
+    build_cache_dir,
+    build_cache_key,
+    cache_file,
+    is_complete_cache_dir,
+)
 from fastpt_tools import get_bias_params_bin
 from photoz_corrs_exact import (
     build_cached_operators,
@@ -45,6 +50,46 @@ GG_TERM_SPECS = (
     ("sig3nl", "sig3nl"),
     ("k2P", "k2P"),
 )
+
+OPERATOR_CACHE_FILES = [
+    "z_low.npy",
+    "zf.npy",
+    "chi.npy",
+    "z_distance.npy",
+    "chi_distance.npy",
+    "az_projected.npy",
+    "weights.npy",
+    "rp.npy",
+    "ell_gp.npy",
+    "ell_pp.npy",
+    "ell_gg.npy",
+    "chi_safe.npy",
+    "window_density_density.npy",
+    "window_density_shape.npy",
+    "window_shape_shape.npy",
+    "hankel_wgp.npy",
+    "hankel_wpp.npy",
+    "hankel_wgg.npy",
+]
+
+
+def template_cache_files(config):
+    files = [f"wgg_{coeff_name}.npy" for coeff_name, _ in GG_TERM_SPECS]
+    files.extend(f"wgp_nla_{coeff_name}.npy" for coeff_name, _ in GM_TERM_SPECS)
+    files.append("wpp_nla.npy")
+    if config["ia_model"] == "tatt":
+        files.extend(f"wgp_ta_{coeff_name}.npy" for coeff_name, _ in GM_TERM_SPECS)
+        files.extend(f"wgp_tt_{coeff_name}.npy" for coeff_name, _ in GM_TERM_SPECS)
+        files.extend(
+            [
+                "wpp_ta_ee.npy",
+                "wpp_ta_cross.npy",
+                "wpp_tt_ee.npy",
+                "wpp_mix_ab.npy",
+                "wpp_mix_d.npy",
+            ]
+        )
+    return files
 
 
 def setup(options):
@@ -128,10 +173,13 @@ def load_or_build_operator_cache(block, config):
     )
     cache_path = cache_file(config["cache_dir"], "photoz_basis_operator", cache_key)
     cache_root = cache_dir_from_file(cache_path)
-    if os.path.isdir(cache_root):
+    if is_complete_cache_dir(cache_root, OPERATOR_CACHE_FILES):
         return load_cache_arrays(cache_root)
-    cache = build_cached_operators(block, config)
-    save_cache_arrays(cache_root, cache)
+    build_cache_dir(
+        cache_root,
+        lambda root: save_cache_arrays(root, build_cached_operators(block, config)),
+        required_files=OPERATOR_CACHE_FILES,
+    )
     return load_cache_arrays(cache_root)
 
 
@@ -395,10 +443,14 @@ def load_or_build_templates(block, config, cache, profiles):
     cache_key = get_template_cache_key(block, config, profiles)
     cache_path = cache_file(config["template_cache_dir"], "photoz_basis_templates", cache_key)
     cache_root = cache_dir_from_file(cache_path)
-    if os.path.isdir(cache_root):
+    required_files = template_cache_files(config)
+    if is_complete_cache_dir(cache_root, required_files):
         return load_templates(cache_root)
-    templates = build_templates(block, config, cache, profiles)
-    save_cache_arrays(cache_root, templates)
+    build_cache_dir(
+        cache_root,
+        lambda root: save_cache_arrays(root, build_templates(block, config, cache, profiles)),
+        required_files=required_files,
+    )
     return load_templates(cache_root)
 
 
