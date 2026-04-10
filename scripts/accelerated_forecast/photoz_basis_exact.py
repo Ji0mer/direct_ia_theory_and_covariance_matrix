@@ -23,6 +23,7 @@ from fastpt_tools import get_bias_params_bin
 from photoz_corrs_exact import (
     build_cached_operators,
     cache_dir_from_file,
+    get_nz_on_grid,
     load_cache_arrays,
     project_cells,
     hankel_project,
@@ -135,42 +136,48 @@ def setup(options):
     }
 
 
-def load_or_build_operator_cache(block, config):
-    z_distance = block["distances", "z"]
-    chi_distance = block["distances", "d_m"] * block["cosmological_parameters", "h0"]
+def get_operator_cache_key_parts(block, config):
+    z_distance = np.asarray(block["distances", "z"])
+    chi_distance = (
+        np.asarray(block["distances", "d_m"]) * block["cosmological_parameters", "h0"]
+    )
     zf = np.linspace(0.0, 4.0, 400)
-    density_section = "nz_%s" % config["density_sample"]
-    shape_section = "nz_%s" % config["shape_sample"]
-    density_nz = np.interp(
-        zf,
-        block[density_section, "z"],
-        block[density_section, "bin_1"],
-        left=0.0,
-        right=0.0,
+    return [
+        config["density_sample"],
+        config["shape_sample"],
+        config["constant_sigmaz"],
+        config["n_pi"],
+        config["pi_mask_max"],
+        block["LOS_bin", "Pi_max"],
+        block["photoz_errors", "sigmaz"] if config["constant_sigmaz"] else 0.01,
+        z_distance,
+        chi_distance,
+        get_nz_on_grid(block, config["density_sample"], zf),
+        get_nz_on_grid(block, config["shape_sample"], zf),
+    ]
+
+
+def get_operator_cache_key(block, config):
+    return build_cache_key(
+        ["photoz_basis_exact_operator"] + get_operator_cache_key_parts(block, config)
     )
-    shape_nz = np.interp(
-        zf,
-        block[shape_section, "z"],
-        block[shape_section, "bin_1"],
-        left=0.0,
-        right=0.0,
+
+
+def get_template_memory_key(operator_cache_key, config, profiles):
+    return (
+        operator_cache_key,
+        config["ia_model"],
+        profiles["alpha1"],
+        profiles["alpha2"],
+        profiles["alphadel"],
+        profiles["z_piv"],
+        config["sub_lowk"],
     )
-    cache_key = build_cache_key(
-        [
-            "photoz_basis_exact_operator",
-            config["density_sample"],
-            config["shape_sample"],
-            config["constant_sigmaz"],
-            config["n_pi"],
-            config["pi_mask_max"],
-            block["LOS_bin", "Pi_max"],
-            block["photoz_errors", "sigmaz"] if config["constant_sigmaz"] else 0.01,
-            z_distance,
-            chi_distance,
-            density_nz,
-            shape_nz,
-        ]
-    )
+
+
+def load_or_build_operator_cache(block, config, cache_key=None):
+    if cache_key is None:
+        cache_key = get_operator_cache_key(block, config)
     cache_path = cache_file(config["cache_dir"], "photoz_basis_operator", cache_key)
     cache_root = cache_dir_from_file(cache_path)
     if is_complete_cache_dir(cache_root, OPERATOR_CACHE_FILES):
@@ -312,12 +319,13 @@ def get_template_cache_key(block, config, profiles):
             "photoz_basis_exact_templates",
             config["ia_model"],
             config["sub_lowk"],
-            config["density_sample"],
-            config["shape_sample"],
             profiles["alpha1"],
             profiles["alpha2"],
             profiles["alphadel"],
             profiles["z_piv"],
+        ]
+        + get_operator_cache_key_parts(block, config)
+        + [
             z_lin,
             k_nl,
             p_nl,
@@ -439,8 +447,9 @@ def build_templates(block, config, cache, profiles):
     return templates
 
 
-def load_or_build_templates(block, config, cache, profiles):
-    cache_key = get_template_cache_key(block, config, profiles)
+def load_or_build_templates(block, config, cache, profiles, cache_key=None):
+    if cache_key is None:
+        cache_key = get_template_cache_key(block, config, profiles)
     cache_path = cache_file(config["template_cache_dir"], "photoz_basis_templates", cache_key)
     cache_root = cache_dir_from_file(cache_path)
     required_files = template_cache_files(config)
@@ -494,22 +503,20 @@ def execute(block, config):
 
         t0 = time()
 
-    if config["reuse_loaded_cache"] and "_loaded_cache" in config:
+    operator_cache_key = get_operator_cache_key(block, config)
+    if (
+        config["reuse_loaded_cache"]
+        and config.get("_loaded_cache_key") == operator_cache_key
+    ):
         cache = config["_loaded_cache"]
     else:
-        cache = load_or_build_operator_cache(block, config)
+        cache = load_or_build_operator_cache(block, config, cache_key=operator_cache_key)
         if config["reuse_loaded_cache"]:
             config["_loaded_cache"] = cache
+            config["_loaded_cache_key"] = operator_cache_key
 
     profiles = get_amplitude_profiles(block, block["matter_power_nl", "k_h"])
-    template_mem_key = (
-        config["ia_model"],
-        profiles["alpha1"],
-        profiles["alpha2"],
-        profiles["alphadel"],
-        profiles["z_piv"],
-        config["sub_lowk"],
-    )
+    template_mem_key = get_template_memory_key(operator_cache_key, config, profiles)
     if config["reuse_loaded_templates"] and config.get("_loaded_templates_key") == template_mem_key:
         templates = config["_loaded_templates"]
     else:

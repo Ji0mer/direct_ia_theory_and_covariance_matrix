@@ -1,3 +1,9 @@
 *.log
 .DS_Store
 __pycache__/
+forecast/.codex
+output/
+fits_data/Roman_fits/
+nz_data/Roman_L_bins/
+nz_data/Roman_z_bins/
+nz_data/DESI_ELG_bin*.npz

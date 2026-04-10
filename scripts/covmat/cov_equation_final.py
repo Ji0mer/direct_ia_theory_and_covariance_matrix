@@ -62,12 +62,13 @@ def setup(options):
         "nbar_dens": options.get_double(option_section, "nbar_dens", default=2e-4),
     }
     nk = 10000
-    return sample, defaults, nk
+    avg_jn_path = options.get_string(option_section, "avg_jn_path", default="")
+    return sample, defaults, nk, avg_jn_path
 
 
 def execute(block, config):
 
-    sample, defaults, nk = config
+    sample, defaults, nk, avg_jn_path = config
     zeff = _get_covmat_param(block, defaults, "zeff")
     area_shape = _get_covmat_param(block, defaults, "area_shape")
     area_dens = _get_covmat_param(block, defaults, "area_dens")
@@ -133,7 +134,6 @@ def execute(block, config):
     nzd = get_pz_from_nz( zuse,nzd,omega_dens,cosmo )
     # survey index where nz > 0
     survey_index = np.where( nzd > 0 )[0]
-    print(survey_index)
     
     # compute w_dd, w_ds, w_ss
     z_chi = block["distances","z"]
@@ -160,9 +160,18 @@ def execute(block, config):
     pf_ddds = 1/omega_shape * np.trapz( W_dd[survey_index]*W_ds[survey_index]*(chi[survey_index]**2*dchidz[survey_index])**-1,zuse[survey_index] ) * 2*Pimax
     pf_ddss = 1/omega_shape * np.trapz( W_dd[survey_index]*W_ss[survey_index]*(chi[survey_index]**2*dchidz[survey_index])**-1,zuse[survey_index] ) * 2*Pimax
     pf_dddd = 1/omega_dens * np.trapz( W_dd[survey_index]**2*(chi[survey_index]**2*dchidz[survey_index])**-1,zuse[survey_index] ) * 2*Pimax
+    #print(pf_dddd)
 
     
-    cc = Compute_covmat(rbins, 1e-3, kuse, nv=[0,2,[0,4]], load_data=True, quad_limits=15000)
+    cc = Compute_covmat(
+        rbins,
+        1e-3,
+        kuse,
+        nv=[0,2,[0,4]],
+        load_data=True,
+        path=(avg_jn_path or None),
+        quad_limits=15000,
+    )
     #cc.save_jn_data()
     cov_gpgp = cc.covariance_wgpwgp(pgg_nl,pii_nl,pgi_nl,Ng,Np)
     cov_gpgp *= pf_dsds
@@ -229,7 +238,6 @@ def execute(block, config):
     block["covmat","rp04"] = cc.rp["[0, 4]"]*h0
 
     return 0
-
 
 
 

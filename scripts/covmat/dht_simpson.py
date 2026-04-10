@@ -6,6 +6,10 @@ from scipy.special import jn
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from itertools import combinations_with_replacement
 
+MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.abspath(os.path.join(MODULE_DIR, "..", ".."))
+DEFAULT_AVG_JN_PATH = os.path.join(os.environ.get("IA_LIB", REPO_ROOT), "output", "avg_jn")
+
 #############################################################################################################################################
 #############################################################################################################################################
 
@@ -162,24 +166,31 @@ class Compute_covmat():
         return 0
 
 
-    def load_jn_data(self, file_path="/projects/blazek_group_storage/zepei/ia_forecast/direct_ia_theory/output/avg_jn/",numbins=20):
+    def load_jn_data(self, file_path=None, numbins=20):
+        if file_path is None:
+            file_path = DEFAULT_AVG_JN_PATH
+        file_path = os.path.abspath(os.path.expanduser(os.path.expandvars(file_path)))
+        if not os.path.isdir(file_path):
+            raise FileNotFoundError(
+                "Missing averaged Bessel cache directory: %s" % file_path
+            )
         
         print("Only using saved k, rp, averaged jn....")
         
-        self.k = np.load(file_path+"k.npy")
+        self.k = np.load(os.path.join(file_path, "k.npy"))
         #self.k *= ( 1-np.heaviside(self.k-20,0) )
         
-        self.rp[0] = np.load(file_path+"rp_nv0.npy")
-        self.rp[2] = np.load(file_path+"rp_nv2.npy")
-        self.rp["[0, 4]"] = np.load(file_path+"rp_nv04.npy")
+        self.rp[0] = np.load(os.path.join(file_path, "rp_nv0.npy"))
+        self.rp[2] = np.load(os.path.join(file_path, "rp_nv2.npy"))
+        self.rp["[0, 4]"] = np.load(os.path.join(file_path, "rp_nv04.npy"))
 
         j0 = {}
         j2 = {}
         j04 = {}
         for i in range(numbins):
-            j0[i] = np.load(file_path+"j0_"+str(i)+".npy")
-            j2[i] = np.load(file_path+"j2_"+str(i)+".npy")
-            j04[i] = np.load(file_path+"j04_"+str(i)+".npy")
+            j0[i] = np.load(os.path.join(file_path, "j0_"+str(i)+".npy"))
+            j2[i] = np.load(os.path.join(file_path, "j2_"+str(i)+".npy"))
+            j04[i] = np.load(os.path.join(file_path, "j04_"+str(i)+".npy"))
         self.j[0] = j0
         self.j[2] = j2
         self.j["[0, 4]"] = j04

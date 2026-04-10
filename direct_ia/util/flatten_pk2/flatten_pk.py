@@ -8,6 +8,17 @@ import scipy.integrate as sint
 import scipy.special as sps
 from scipy.interpolate import interp1d
 
+TRAPEZOID = getattr(sint, "trapezoid", np.trapz)
+
+
+def _build_linear_interp2d(x, y, values):
+	spline = spi.RectBivariateSpline(y, x, values, kx=1, ky=1)
+
+	def _interp(x_new, y_new):
+		return spline(np.atleast_1d(y_new), np.atleast_1d(x_new))
+
+	return _interp
+
 def setup(options):
 
     power_spectrum_name = options.get_string(option_section, "pk_name")
@@ -78,7 +89,7 @@ def execute(block, config):
 		logint = False
 		lnpk = pk
 
-	interp = spi.interp2d(np.log(k), z, lnpk, kind='linear')
+	interp = _build_linear_interp2d(np.log(k), z, lnpk)
 
 	# Simplest case: take the 2D grid P(k,z) and interpolate to the desired redshift
 	# Effectively assuming the redshift distribution is a delta fn.
@@ -87,7 +98,7 @@ def execute(block, config):
 	#redshift = np.atleast_1d(redshift)
 	if (not window_function):
 		for z0 in redshift:
-			pk_interpolated = interp(np.log(k), [z0])
+			pk_interpolated = np.asarray(interp(np.log(k), [z0])).reshape(-1)
 			if logint:
 				pk_interpolated = np.exp(pk_interpolated)
 
@@ -142,14 +153,20 @@ def execute(block, config):
 
 				x = interp_chi(za)
 				dxdz = interp_dchi(za)
-				X = nz_a * nz_b/x/x/dxdz
+				with np.errstate(divide='ignore', invalid='ignore'):
+					X = nz_a * nz_b/x/x/dxdz
 				X[0] = 0
 				interp_X = spi.interp1d(za, X)
 
 				# Inner integral over redshift
 				#V,Verr = sint.quad(interp_X, zmin, za.max())
 				V = np.trapz(X,za)
-				W = nz_a*nz_b/x/x/dxdz/V
+				if V == 0 or (not np.isfinite(V)):
+					W = np.zeros_like(X)
+				else:
+					with np.errstate(divide='ignore', invalid='ignore'):
+						W = nz_a*nz_b/x/x/dxdz/V
+				W[np.invert(np.isfinite(W))] = 1e-30
 
 				# Now do the power spectrum integration
 				W2d,_ = np.meshgrid(W,k)
@@ -165,13 +182,11 @@ def execute(block, config):
 				# Outer integral with kernel calculated above
 				# nb the normalisation matters!!!
 				integrand = W2d.T * pk_interpolated
-				Pw = sint.trapz(integrand,za,axis=0) / sint.trapz(W2d.T,za,axis=0)
+				Pw = TRAPEZOID(integrand,za,axis=0) / TRAPEZOID(W2d.T,za,axis=0)
 
 				block.put_double_array_1d(output_section_name, 'p_k_%d_%d_%s_%s'%(i+1,j+1,sample_a,sample_b), Pw)
 
 	return 0
-
-
 
 
 

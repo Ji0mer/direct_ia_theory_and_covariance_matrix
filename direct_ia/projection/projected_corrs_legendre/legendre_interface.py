@@ -8,12 +8,31 @@ import scipy.integrate as sint
 import mcfit
 from mcfit import P2xi
 from scipy.interpolate import interp1d
-from scipy.interpolate import interp2d
 from scipy.special import eval_legendre as legendre
 from scipy import integrate
 from astropy.cosmology import FlatLambdaCDM
 
 y3fid_cosmology = FlatLambdaCDM(H0=69., Om0=0.30, Ob0=0.048)
+TRAPEZOID = getattr(sint, "trapezoid", np.trapz)
+if hasattr(integrate, "cumulative_trapezoid"):
+    CUMULATIVE_TRAPEZOID = integrate.cumulative_trapezoid
+else:
+    CUMULATIVE_TRAPEZOID = integrate.cumtrapz
+
+
+def interp_power(input_k, input_z, input_power, knew, znew):
+    log_k = np.log10(input_k)
+    log_knew = np.log10(knew)
+
+    if (input_power > 0).all():
+        spline = spi.RectBivariateSpline(input_z, log_k, np.log10(input_power), kx=1, ky=1)
+        return 10 ** spline(znew, log_knew)
+
+    offset = np.min(input_power) - 1.0
+    spline = spi.RectBivariateSpline(
+        input_z, log_k, np.log10(input_power - offset), kx=1, ky=1
+    )
+    return 10 ** spline(znew, log_knew) + offset
 
 def setup(options):
     sample_a = options.get_string(option_section, "sample_a", default="lens lens").split()
@@ -106,15 +125,7 @@ def execute(block, config):
         z = block[pknames[c],'z']
         #import pdb ; pdb.set_trace()
 
-        if (P>0).all():
-            inter = interp2d(np.log10(k), z, np.log10(P))
-            #import pdb ; pdb.set_trace()
-            Pnew = 10**inter(np.log10(knew), z1)
-        else:
-            #import pdb ; pdb.set_trace()
-            Pmin = np.min(P)-1
-            inter = interp2d(np.log10(k), z, np.log10(P-Pmin))
-            Pnew = 10**inter(np.log10(knew), z1)+Pmin
+        Pnew = interp_power(k, z, P, knew, z1)
 
 
         if (c=='wgg'):
@@ -150,7 +161,7 @@ def execute(block, config):
     #    import pdb ; pdb.set_trace()
         
         integrand = K.T * W
-        W_flat = sint.trapz(integrand,z1,axis=0) / sint.trapz(K.T,z1,axis=0)
+        W_flat = TRAPEZOID(integrand,z1,axis=0) / TRAPEZOID(K.T,z1,axis=0)
         
 
         section = pknames[c].replace('_power','_w')
@@ -297,15 +308,21 @@ def get_redshift_kernel(block, i, j, z0, z_x, x, sample_a, sample_b):
     interp_nz = spi.interp1d(za, nz_a, fill_value='extrapolate')
     nz_a = interp_nz(z0)
 
-    X = nz_a * nz_b/x/x/dxdz
+    with np.errstate(divide="ignore", invalid="ignore"):
+        X = nz_a * nz_b/x/x/dxdz
     X[0]=0
     interp_X = spi.interp1d(z0, X, fill_value='extrapolate')
 
     # Inner integral over redshift
     #V,Verr = sint.quad(interp_X, zmin, z0.max())
     V = np.trapz(X,z0)
-    W = nz_a*nz_b/x/x/dxdz/V
+    if V == 0 or (not np.isfinite(V)):
+        W = np.zeros_like(X)
+    else:
+        with np.errstate(divide="ignore", invalid="ignore"):
+            W = nz_a*nz_b/x/x/dxdz/V
     W[0]=0
+    W[~np.isfinite(W)] = 0
 
     return z0,W
 
@@ -341,7 +358,7 @@ class Projected_Corr_RSD():
 
     def w_to_DS(self,rp=[],w=[]):
         DS0=2*w[0]*rp[0]**2
-        return 2.*integrate.cumtrapz(w*rp,x=rp,initial=0)/rp**2-w+DS0/rp**2
+        return 2.*CUMULATIVE_TRAPEZOID(w*rp,x=rp,initial=0)/rp**2-w+DS0/rp**2
 
     def get_xi(self, pk=[], l=[0,2,4]):
         xi={}

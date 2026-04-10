@@ -53,12 +53,13 @@ def setup(options):
         "nbar_dens": options.get_double(option_section, "nbar_dens", default=2e-4),
     }
     nk = 10000
-    return sample, defaults, nk
+    avg_jn_path = options.get_string(option_section, "avg_jn_path", default="")
+    return sample, defaults, nk, avg_jn_path
 
 
 def execute(block, config):
 
-    sample, defaults, nk = config
+    sample, defaults, nk, avg_jn_path = config
     zeff = _get_covmat_param(block, defaults, "zeff")
     area_shape = _get_covmat_param(block, defaults, "area_shape")
     area_dens = _get_covmat_param(block, defaults, "area_dens")
@@ -152,7 +153,14 @@ def execute(block, config):
     wddwdd = np.trapz( W_dd**2,zuse )
     
     
-    cc = Compute_covmat(rbins,1e-3,kuse,nv=[0,2,[0,4]],load_data = True)
+    cc = Compute_covmat(
+        rbins,
+        1e-3,
+        kuse,
+        nv=[0,2,[0,4]],
+        load_data=True,
+        path=(avg_jn_path or None),
+    )
     #cc.save_jn_data()
     cov_gpgp = cc.covariance_wgpwgp(pgg_lin,pii_lin,pgi_lin,Ng,Np)
     cov_gpgp /= area_shape
@@ -227,7 +235,6 @@ def execute(block, config):
     block["covmat","rp04"] = cc.rp["[0, 4]"]
 
     return 0
-
 
 
 

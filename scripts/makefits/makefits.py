@@ -62,7 +62,8 @@ def execute(block, config):
     #############################################################################################
     # make fits
     # remove the same output file if it exists
-    os.system('rm %s'%fits_name)
+    if os.path.exists(fits_name):
+        os.remove(fits_name)
     fits = fi.FITS(fits_name,'rw')
     
     # store the shape data in the FITS file

@@ -8,6 +8,8 @@ import scipy.integrate as sint
 import scipy.interpolate as spi
 from cosmosis.datablock import names, option_section
 
+TRAPEZOID = getattr(sint, "trapezoid", np.trapz)
+
 MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 NONLINEAR_BIAS_DIR = os.path.abspath(os.path.join(MODULE_DIR, "..", "nonlinear_bias"))
 TATT_DIR = os.path.abspath(os.path.join(MODULE_DIR, "..", "tatt"))
@@ -209,21 +211,18 @@ def build_window(block, sample_a, sample_b, bin_i, bin_j):
 
 
 def project_pk_window(field_zk, k_h, z_field, z_window, window):
+    log_k = np.log(k_h)
     if len(field_zk[field_zk > 0]) == len(field_zk.ravel()):
-        logint = True
-        interp_vals = spi.interp2d(np.log(k_h), z_field, np.log(field_zk), kind="linear")
-        field_interp = np.exp(interp_vals(np.log(k_h), z_window))
+        spline = spi.RectBivariateSpline(z_field, log_k, np.log(field_zk), kx=1, ky=1)
+        field_interp = np.exp(spline(z_window, log_k))
     else:
-        logint = False
-        interp_vals = spi.interp2d(np.log(k_h), z_field, field_zk, kind="linear")
-        field_interp = interp_vals(np.log(k_h), z_window)
-        if logint:
-            field_interp = np.exp(field_interp)
+        spline = spi.RectBivariateSpline(z_field, log_k, field_zk, kx=1, ky=1)
+        field_interp = spline(z_window, log_k)
 
     W2d, _ = np.meshgrid(window, k_h)
     W2d[np.invert(np.isfinite(W2d))] = 1.0e-30
     integrand = W2d.T * field_interp
-    return sint.trapz(integrand, z_window, axis=0) / sint.trapz(W2d.T, z_window, axis=0)
+    return TRAPEZOID(integrand, z_window, axis=0) / TRAPEZOID(W2d.T, z_window, axis=0)
 
 
 def get_template_cache_key(block, config, profiles):

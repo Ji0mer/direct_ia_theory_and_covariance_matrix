@@ -30,6 +30,9 @@ from gamma_funcs import g_m_vals, gamsn
 from P_extend import k_extend 
 from scipy.integrate import quad
 
+if not hasattr(np, "trapz"):
+	np.trapz = np.trapezoid
+
 log2=log(2.)
 class FASTPT:
 	

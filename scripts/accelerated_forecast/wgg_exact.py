@@ -7,6 +7,8 @@ import numpy as np
 import scipy.integrate as sint
 from cosmosis.datablock import option_section
 
+TRAPEZOID = getattr(sint, "trapezoid", np.trapz)
+
 MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECTION_DIR = os.path.abspath(
     os.path.join(MODULE_DIR, "..", "projection", "projected_corrs_legendre")
@@ -131,7 +133,7 @@ def build_xi_cache(X, k, z, pk_terms, knew, z1, fz, ba, bb):
 
 
 def build_projected_terms(xi_terms, z1, fz, w_kernel):
-    norm = sint.trapz(w_kernel, z1)
+    norm = TRAPEZOID(w_kernel, z1)
     w0 = w_kernel[np.newaxis, :, np.newaxis]
     w1 = (fz * w_kernel)[np.newaxis, :, np.newaxis]
     w2 = (fz * fz * w_kernel)[np.newaxis, :, np.newaxis]
@@ -141,10 +143,10 @@ def build_projected_terms(xi_terms, z1, fz, w_kernel):
     xi4 = np.asarray(xi_terms[4])
 
     return {
-        "base_terms": sint.trapz(xi0 * w0, z1, axis=1) / norm,
-        "linear_terms": sint.trapz(((1.0 / 3.0) * xi0 + (2.0 / 3.0) * xi2) * w1, z1, axis=1)
+        "base_terms": TRAPEZOID(xi0 * w0, z1, axis=1) / norm,
+        "linear_terms": TRAPEZOID(((1.0 / 3.0) * xi0 + (2.0 / 3.0) * xi2) * w1, z1, axis=1)
         / norm,
-        "quadratic_terms": sint.trapz(
+        "quadratic_terms": TRAPEZOID(
             ((1.0 / 5.0) * xi0 + (4.0 / 7.0) * xi2 + (8.0 / 35.0) * xi4) * w2,
             z1,
             axis=1,

@@ -56,6 +56,9 @@ import RSD_ItypeII
 from P_extend import k_extend
 import FASTPT_simple as fastpt_simple
 
+if not hasattr(np, "trapz"):
+    np.trapz = np.trapezoid
+
 ## WHEN DOES THE IMPORT STEP OCCUR? DO WE WANT TO MOVE SOME OF THESE TO THE INITIALIZATION BLOCK TO SAVE TIME ON LIGHT RUNS?
 
 
