@@ -1,8 +1,11 @@
 *.log
 .DS_Store
 __pycache__/
+.codex
 forecast/.codex
-output/
+output/*
+!output/pk_fid/
+!output/pk_fid/**
 fits_data/Roman_fits/
 nz_data/Roman_L_bins/
 nz_data/Roman_z_bins/

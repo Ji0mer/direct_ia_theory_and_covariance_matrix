@@ -1,143 +1,189 @@
-# Direct IA Forecast Pipeline
+# Direct IA Theory and Covariance Matrix
 
-This repository contains a CosmoSIS pipeline for direct intrinsic-alignment forecast work. It can:
+CosmoSIS pipeline for direct intrinsic-alignment (IA) forecasting. This repository generates mock projected correlation functions, builds their covariance matrices, writes FITS data products, and runs standard or accelerated forecast chains from those products.
 
-- generate mock projected-correlation data vectors
-- compute covariance matrices for `wgp`, `wpp`, and `wgg`
-- export FITS data products
-- run forecasts from existing FITS files
+## Overview
 
-The `direct_ia/` directory contains the theory, projection, likelihood, and utility modules required by this pipeline. These were migrated from `direct_ia_theory` so this repository can run as a self-contained workflow.
+This repository is built around three closely related workflows:
 
-Contact: Zepei Yang (`yang.zep@northeastern.edu`)
+1. Generate mock `wgp`, `wpp`, and `wgg` data vectors.
+2. Build covariance matrices and package the result into a 2-point FITS file.
+3. Run forecast pipelines from the generated FITS input, either in full mode or with a fixed-background accelerated path.
 
-## Repository layout
+The `direct_ia/` tree vendors the theory, projection, likelihood, and utility modules needed to run the pipeline as a self-contained project.
 
-- `direct_ia/`: migrated theory, likelihood, projection, and utility modules
-- `scripts/`: pipeline-specific modules such as `replace_nz`, covariance, FITS writing, and photo-z projections
-- `scripts/accelerated_forecast/`: exact fixed-cosmology acceleration modules for forecast pipelines
-- `examples/`: runnable CosmoSIS configs
-- `fits_data/`: template and generated FITS files
-- `nz_data/`: redshift-distribution inputs
-- `output/`: cached inputs, intermediates, and run outputs
+## Pipeline At A Glance
 
-## Setup
+### Mock generation
 
-This README assumes you already have a working CosmoSIS environment and `cosmosis-standard-library`.
+The mock-generation examples (`examples/generate-data.ini` and `examples/generate-data-photoz.ini`) follow this logic:
 
-Edit `setup.sh` for your machine and set:
+1. Load cached nonlinear and linear matter power spectra plus background distances (`read_pk`, `read_pk_lin`, `growth`).
+2. Build galaxy and IA power-spectrum ingredients (`fast_pt`, `pk_to_cl_gg`, `IA`, `flatten_gi`, `flatten_ii`).
+3. Project into configuration-space observables:
+   - spectroscopic path: `wgp`, `wpp`, `wgg`
+   - photo-z path: `wgp_photoz`, `wpp_photoz`, `wgg_photoz`
+4. Apply photo-z factors, assemble the covariance matrix, write the FITS product, and run `ia_like` as a consistency check.
+
+### Standard forecast
+
+The standard forecast examples (`examples/params-forecast.ini` and `examples/params-forecast-photoz.ini`) read an existing FITS file, recompute the theory prediction for the configured IA and bias parameters, and evaluate the likelihood with `ia_like`.
+
+### Fast forecast
+
+The accelerated examples (`examples/params-forecast-fast.ini` and `examples/params-forecast-photoz-fast.ini`) replace the slowest repeated calculations with exact fixed-background modules in `scripts/accelerated_forecast/`.
+
+Use the fast path when cosmology, distances, survey setup, `n(z)`, and photo-z assumptions stay fixed while IA and galaxy-bias parameters vary. The first run creates cache and template products under `intermediate_dir`; repeated runs with compatible fixed inputs are much faster.
+
+## Repository Layout
+
+| Path | Purpose |
+| --- | --- |
+| `direct_ia/` | Core theory, projection, likelihood, and utility modules vendored into this repository |
+| `scripts/` | Pipeline-specific modules for projection, covariance, FITS output, photo-z, and accelerated forecasts |
+| `examples/` | Main runnable CosmoSIS entry points |
+| `generate/` | Alternate generation pipeline configs |
+| `forecast/` | Alternate forecast pipeline configs |
+| `fits_data/` | Template and generated FITS files |
+| `nz_data/` | Redshift-distribution inputs |
+| `output/` | Cached power spectra, intermediates, logs, and run outputs |
+| `setup.sh` | Environment bootstrap for this repository |
+
+## Requirements
+
+You will need:
+
+- a working CosmoSIS installation
+- `cosmosis-standard-library`
+- a conda or virtual environment used by that CosmoSIS install
+- a bash shell on Linux or WSL
+
+Install the following Python packages into the same environment:
+
+- `numpy`
+- `scipy`
+- `matplotlib`
+- `astropy`
+- `fitsio`
+- `mcfit`
+- `hankl`
+
+Dependency notes:
+
+- `fitsio` is used by the FITS I/O path in `read_pk`, `photoz_factor`, `ialike`, and `makefits`.
+- `mcfit` is required by `direct_ia/projection/projected_corrs_legendre/legendre_interface.py`.
+- `hankl` is required at runtime by the photo-z correlation modules in `scripts/photoz/` and by the accelerated photo-z forecast path.
+
+## Installation
+
+### Expected default layout
+
+`setup.sh` assumes the following directory structure by default:
+
+```text
+/home/jiomer/research/
+|-- cosmosis/
+`-- direct_ia_theory_and_covariance_matrix/
+```
+
+### Install Python dependencies
+
+If your tree matches the default layout, activate the CosmoSIS environment, install the missing packages, and source the repository setup script:
+
+```bash
+source /home/jiomer/anaconda3/etc/profile.d/conda.sh
+conda activate /home/jiomer/research/cosmosis/env
+pip install numpy scipy matplotlib astropy fitsio mcfit hankl
+
+cd /home/jiomer/research/direct_ia_theory_and_covariance_matrix
+source setup.sh
+```
+
+If you prefer conda packages where available:
+
+```bash
+conda install -c conda-forge numpy scipy matplotlib astropy fitsio mcfit
+pip install hankl
+```
+
+### What `setup.sh` exports
+
+After activation, `setup.sh` sources `cosmosis-configure` and exports:
 
 - `COSMOSIS_LIB`
 - `IA_LIB`
 - `DATA_DIR`
 
-Then source it:
+If your layout differs from the default, set the paths before sourcing `setup.sh`:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `CONDA_SH` | `$HOME/anaconda3/etc/profile.d/conda.sh` | Conda initialization script |
+| `COSMOSIS_ROOT` | `../cosmosis` | CosmoSIS checkout root |
+| `COSMOSIS_ENV` | `$COSMOSIS_ROOT/env` | CosmoSIS conda environment |
+| `COSMOSIS_LIB` | `$COSMOSIS_ROOT/cosmosis-standard-library` | `cosmosis-standard-library` checkout |
+
+Example:
 
 ```bash
+export CONDA_SH=/path/to/conda.sh
+export COSMOSIS_ROOT=/path/to/cosmosis
+export COSMOSIS_ENV=/path/to/cosmosis/env
+export COSMOSIS_LIB=/path/to/cosmosis/cosmosis-standard-library
 source setup.sh
 ```
 
-If you need to rebuild the compiled Limber projection module, see `direct_ia/projection/projected_corrs_limber/`.
+## Quick Start
 
-## Quick start
+| Task | Command |
+| --- | --- |
+| Generate spectroscopic mocks | `cosmosis examples/generate-data.ini` |
+| Generate photo-z mocks | `cosmosis examples/generate-data-photoz.ini` |
+| Run standard spectroscopic forecast | `cosmosis examples/params-forecast.ini` |
+| Run standard photo-z forecast | `cosmosis examples/params-forecast-photoz.ini` |
+| Run accelerated spectroscopic forecast | `cosmosis examples/params-forecast-fast.ini` |
+| Run accelerated photo-z forecast | `cosmosis examples/params-forecast-photoz-fast.ini` |
 
-Generate a spectroscopic mock:
+For a smoke test, keep `sampler = test` in the relevant `.ini`. Switch to `multinest`, `polychord`, or another sampler only after the pipeline runs cleanly.
 
-```bash
-cosmosis examples/generate-data.ini
-```
+## What You Will Usually Edit
 
-Generate a photo-z mock:
-
-```bash
-cosmosis examples/generate-data-photoz.ini
-```
-
-Run a spectroscopic forecast:
-
-```bash
-cosmosis examples/params-forecast.ini
-```
-
-Run a photo-z forecast:
-
-```bash
-cosmosis examples/params-forecast-photoz.ini
-```
-
-Run the fast spectroscopic forecast:
-
-```bash
-cosmosis examples/params-forecast-fast.ini
-```
-
-Run the fast photo-z forecast:
-
-```bash
-cosmosis examples/params-forecast-photoz-fast.ini
-```
-
-For a smoke test, keep `sampler = test` in the relevant `.ini` file.
-
-## Fast forecasts
-
-This repository includes exact fixed-background acceleration paths for the current fast forecast pipelines under `scripts/accelerated_forecast/`.
-
-- `examples/params-forecast-fast.ini` is the fast spectroscopic forecast example.
-- `examples/params-forecast-photoz-fast.ini` is the fast photo-z forecast example.
-- These fast examples are intended for the common forecast case where cosmology, distances, `n(z)`, and photo-z settings are fixed while IA and galaxy-bias parameters vary.
-
-The acceleration strategy is different for the two forecast types:
-
-- Spectroscopic forecast: cached FAST-PT and `wgg` terms plus exact projected IA basis templates for `wgp` and `wpp`.
-- Photo-z forecast: exact projected basis templates for `wgg`, `wgp`, and `wpp`, so the hot path only combines precomputed templates.
-
-These modules are designed to preserve the forecast outputs of the original pipelines for fixed background inputs rather than introducing an emulator or approximate surrogate model.
-
-Current fast-path modules include:
-
-- `scripts/accelerated_forecast/nlbias_exact.py`
-- `scripts/accelerated_forecast/wgg_exact.py`
-- `scripts/accelerated_forecast/photoz_basis_exact.py`
-- `scripts/accelerated_forecast/projected_ia_basis_exact.py`
-
-Notes:
-
-- The first run is slower because it builds cache and template files under the example `intermediate_dir`.
-- Repeated runs with the same fixed cosmology and survey inputs are much faster.
-- The fast examples support both `nla` and `tatt` IA settings through the acceleration modules.
-- The public repository's original `tatt` path currently has an upstream FAST-PT grid mismatch in some configurations; the accelerated modules work around that internally for the forecast hot path.
-- If you change cosmology, distances, `n(z)`, or photo-z settings, treat the next run as a new cold start.
-- You do not need to manually delete old cache files when switching cosmology. The accelerated modules key caches on the fixed-background inputs and will build a new cache automatically.
-- Old caches are not reused for a different cosmology, but they do remain on disk until you remove them yourself.
-- These fast examples are intended for fixed-cosmology forecast scans over IA and bias parameters. Do not use them to sample cosmological parameters within the same run.
-
-## Inputs and configuration
-
-The example pipelines expect local inputs already present in this repository:
-
-- cached power spectra and distance tables under `output/pk_fid/`
-- redshift-distribution files under `nz_data/`
-- FITS templates or existing FITS data vectors under `fits_data/`
-
-Most user changes happen in:
+Most routine changes happen in:
 
 - `examples/*.ini`
 - `examples/values-generate.ini`
+- `examples/values-generate-photoz.ini`
 - `examples/values-forecast.ini`
+- `examples/values-forecast-tatt-test.ini`
 
-Typical edits include file paths, sample names, `n(z)` choices, survey area, number density, shape noise, IA parameters, bias parameters, and photo-z settings.
+Typical edits include:
 
-For accelerated runs, the most important knobs are:
+- FITS input and output file names
+- `n(z)` inputs in `nz_data/`
+- sample and survey names
+- survey area, number density, and shape noise
+- IA model choices and IA amplitude parameters
+- galaxy-bias parameters
+- fast-run cache locations via `intermediate_dir`
 
-- `examples/values-forecast.ini` or another forecast values file
-- the `intermediate_dir` in the example `.ini`
-- the `ia_model` setting in the accelerated theory section
-- cache and template directories inside `scripts/accelerated_forecast/*`
+## Inputs And Outputs
+
+The bundled examples expect repository-local inputs such as:
+
+- `output/pk_fid/` for cached power spectra and distance tables
+- `nz_data/` for redshift distributions
+- `fits_data/` for template and generated FITS products
+
+Generated text outputs, intermediates, and caches are written under `output/`.
 
 ## Notes
 
-- Covariance calculation is a core part of the mock-generation workflow, not a separate post-processing step.
+- Covariance generation is part of the mock-generation workflow, not a separate post-processing step.
 - The generation pipelines also run the likelihood module as a consistency check.
-- Output and cache directories can become large.
-- `direct_ia_theory` should be treated as module provenance, not as a runtime dependency for this repository.
+- This repository already carries the migrated `direct_ia` modules, so `direct_ia_theory` is provenance rather than a runtime dependency.
+- If you need to rebuild the compiled Limber projection module, inspect `direct_ia/projection/projected_corrs_limber/`.
+- `output/` can grow quickly when running many forecast scans or cache-heavy fast runs.
+
+## Contact
+
+Zepei Yang (`yang.zep@northeastern.edu`)
