@@ -121,23 +121,33 @@ Dependency notes:
 
 ### Expected layout
 
-`setup.sh` assumes a layout like:
+If you use the repository defaults, `setup.sh` expects the CosmoSIS checkout to live next to this repository:
 
 ```text
-/home/jiomer/research/
+<workspace-parent>/
 |-- cosmosis/
 `-- direct_ia_theory_and_covariance_matrix/
 ```
 
 ### Activate the environment
 
-```bash
-source /home/jiomer/anaconda3/etc/profile.d/conda.sh
-conda activate /home/jiomer/research/cosmosis/env
+The most portable approach is to set the paths you want explicitly:
 
-cd /home/jiomer/research/direct_ia_theory_and_covariance_matrix
+```bash
+export REPO_ROOT=/path/to/direct_ia_theory_and_covariance_matrix
+export COSMOSIS_ROOT=/path/to/cosmosis
+export COSMOSIS_ENV=$COSMOSIS_ROOT/env
+export COSMOSIS_LIB=$COSMOSIS_ROOT/cosmosis-standard-library
+export CONDA_SH=/path/to/conda.sh
+
+source "$CONDA_SH"
+conda activate "$COSMOSIS_ENV"
+
+cd "$REPO_ROOT"
 source setup.sh
 ```
+
+If your shell already initializes conda, you can skip `source "$CONDA_SH"` and just run `conda activate "$COSMOSIS_ENV"` before sourcing `setup.sh`.
 
 ### Install missing packages
 
@@ -160,11 +170,11 @@ After activation, `setup.sh` sources `cosmosis-configure` and exports:
 - `IA_LIB`
 - `DATA_DIR`
 
-If your layout differs, set the paths first:
+If you do not set overrides, `setup.sh` uses repo-relative defaults such as `../cosmosis` for the CosmoSIS root. If your layout differs, set the variables first:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `CONDA_SH` | `$HOME/anaconda3/etc/profile.d/conda.sh` | Conda initialization script |
+| `CONDA_SH` | unset | Conda initialization script |
 | `COSMOSIS_ROOT` | `../cosmosis` | CosmoSIS checkout root |
 | `COSMOSIS_ENV` | `$COSMOSIS_ROOT/env` | CosmoSIS conda environment |
 | `COSMOSIS_LIB` | `$COSMOSIS_ROOT/cosmosis-standard-library` | `cosmosis-standard-library` checkout |
@@ -172,10 +182,12 @@ If your layout differs, set the paths first:
 Example:
 
 ```bash
+export REPO_ROOT=/path/to/direct_ia_theory_and_covariance_matrix
 export CONDA_SH=/path/to/conda.sh
 export COSMOSIS_ROOT=/path/to/cosmosis
 export COSMOSIS_ENV=/path/to/cosmosis/env
 export COSMOSIS_LIB=/path/to/cosmosis/cosmosis-standard-library
+cd "$REPO_ROOT"
 source setup.sh
 ```
 
