@@ -47,6 +47,13 @@ def _get_covmat_param(block, defaults, name):
         return block["covmat", name]
     return defaults[name]
 
+
+def _normalize_weight(weight, z):
+    norm = np.trapz(weight, z)
+    if (not np.isfinite(norm)) or (norm == 0.0):
+        return np.zeros_like(weight, dtype=float)
+    return weight / norm
+
 def setup(options):
 
     sample = options.get_string(option_section,"sample",default="cmass")
@@ -132,34 +139,53 @@ def execute(block, config):
     nzd_interp = interp1d( zd,nzd,bounds_error=False,fill_value=0 )
     nzd = nzd_interp( zuse )
     nzd = get_pz_from_nz( zuse,nzd,omega_dens,cosmo )
-    # survey index where nz > 0
-    survey_index = np.where( nzd > 0 )[0]
-    
     # compute w_dd, w_ds, w_ss
     z_chi = block["distances","z"]
     chi = block["distances","d_m"]
-    chi_interp = interp1d(z_chi,chi)
+    chi_interp = interp1d(z_chi,chi,bounds_error=False,fill_value="extrapolate")
     Chi = chi_interp(zuse)
     
     dchidz = dxdz = np.gradient(Chi,zuse[1]-zuse[0])
-    W_ds = nzs * nzd /Chi/Chi/dchidz
-    W_ds /= np.trapz( W_ds,zuse )
-    W_dd = nzd * nzd /Chi/Chi/dchidz
-    W_dd /= np.trapz( W_dd,zuse )
-    W_ss = nzs * nzs /Chi/Chi/dchidz
-    W_ss /= np.trapz( W_ss,zuse )
+    geom = Chi**2 * dchidz
+    valid_geom = np.isfinite(geom) & (geom != 0.0)
+
+    W_ds = np.divide(
+        nzs * nzd,
+        geom,
+        out=np.zeros_like(zuse, dtype=float),
+        where=valid_geom,
+    )
+    W_ds = _normalize_weight(W_ds, zuse)
+    W_dd = np.divide(
+        nzd * nzd,
+        geom,
+        out=np.zeros_like(zuse, dtype=float),
+        where=valid_geom,
+    )
+    W_dd = _normalize_weight(W_dd, zuse)
+    W_ss = np.divide(
+        nzs * nzs,
+        geom,
+        out=np.zeros_like(zuse, dtype=float),
+        where=valid_geom,
+    )
+    W_ss = _normalize_weight(W_ss, zuse)
+
+    prefactor_mask = (nzd > 0) & valid_geom
+    inv_geom = np.zeros_like(zuse, dtype=float)
+    inv_geom[prefactor_mask] = 1.0 / geom[prefactor_mask]
+
+    pf_dsds = 1/omega_shape * np.trapz( W_ds**2 * inv_geom,zuse ) * 2*Pimax
+    pf_dsss = 1/omega_shape * np.trapz( W_ds*W_ss * inv_geom,zuse ) * 2*Pimax
+    pf_dsdd = 1/omega_shape * np.trapz( W_ds*W_dd * inv_geom,zuse ) * 2*Pimax
     
-    pf_dsds = 1/omega_shape * np.trapz( W_ds[survey_index]**2*(chi[survey_index]**2*dchidz[survey_index])**-1,zuse[survey_index] ) * 2*Pimax
-    pf_dsss = 1/omega_shape * np.trapz( W_ds[survey_index]*W_ss[survey_index]*(chi[survey_index]**2*dchidz[survey_index])**-1,zuse[survey_index] ) * 2*Pimax
-    pf_dsdd = 1/omega_shape * np.trapz( W_ds[survey_index]*W_dd[survey_index]*(chi[survey_index]**2*dchidz[survey_index])**-1,zuse[survey_index] ) * 2*Pimax
+    pf_ssds = 1/omega_shape * np.trapz( W_ss*W_ds * inv_geom,zuse ) * 2*Pimax
+    pf_ssss = 1/omega_shape * np.trapz( W_ss**2 * inv_geom,zuse ) * 2*Pimax
+    pf_ssdd = 1/omega_shape * np.trapz( W_ss*W_dd * inv_geom,zuse ) * 2*Pimax
     
-    pf_ssds = 1/omega_shape * np.trapz( W_ss[survey_index]*W_ds[survey_index]*(chi[survey_index]**2*dchidz[survey_index])**-1,zuse[survey_index] ) * 2*Pimax
-    pf_ssss = 1/omega_shape * np.trapz( W_ss[survey_index]**2*(chi[survey_index]**2*dchidz[survey_index])**-1,zuse[survey_index] ) * 2*Pimax
-    pf_ssdd = 1/omega_shape * np.trapz( W_ss[survey_index]*W_dd[survey_index]*(chi[survey_index]**2*dchidz[survey_index])**-1,zuse[survey_index] ) * 2*Pimax
-    
-    pf_ddds = 1/omega_shape * np.trapz( W_dd[survey_index]*W_ds[survey_index]*(chi[survey_index]**2*dchidz[survey_index])**-1,zuse[survey_index] ) * 2*Pimax
-    pf_ddss = 1/omega_shape * np.trapz( W_dd[survey_index]*W_ss[survey_index]*(chi[survey_index]**2*dchidz[survey_index])**-1,zuse[survey_index] ) * 2*Pimax
-    pf_dddd = 1/omega_dens * np.trapz( W_dd[survey_index]**2*(chi[survey_index]**2*dchidz[survey_index])**-1,zuse[survey_index] ) * 2*Pimax
+    pf_ddds = 1/omega_shape * np.trapz( W_dd*W_ds * inv_geom,zuse ) * 2*Pimax
+    pf_ddss = 1/omega_shape * np.trapz( W_dd*W_ss * inv_geom,zuse ) * 2*Pimax
+    pf_dddd = 1/omega_dens * np.trapz( W_dd**2 * inv_geom,zuse ) * 2*Pimax
     #print(pf_dddd)
 
     
@@ -238,8 +264,6 @@ def execute(block, config):
     block["covmat","rp04"] = cc.rp["[0, 4]"]*h0
 
     return 0
-
-
 
 
 
