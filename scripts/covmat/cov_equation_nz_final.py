@@ -1,5 +1,6 @@
+import os
 import numpy as np
-from dht_simpson_nz import Compute_covmat
+from dht_simpson_nz import Compute_covmat, DEFAULT_AVG_JN_PATH
 from scipy.interpolate import interp1d
 from cosmosis.datablock import option_section
 from astropy.cosmology import Planck13
@@ -72,6 +73,10 @@ def _safe_inverse_density(nz, factor=1.0):
     return noise
 
 
+def _resolve_cache_path(path):
+    return os.path.abspath(os.path.expanduser(os.path.expandvars(path)))
+
+
 def setup(options):
     sample = options.get_string(option_section, "sample", default="cmass")
     defaults = {
@@ -87,11 +92,13 @@ def setup(options):
     }
     nk = 10000
     avg_jn_path = options.get_string(option_section, "avg_jn_path", default="")
-    return sample, defaults, nk, avg_jn_path
+    rebuild_avg_jn = options.get_bool(option_section, "rebuild_avg_jn", default=False)
+    save_avg_jn_path = options.get_string(option_section, "save_avg_jn_path", default="")
+    return sample, defaults, nk, avg_jn_path, rebuild_avg_jn, save_avg_jn_path
 
 
 def execute(block, config):
-    sample, defaults, nk, avg_jn_path = config
+    sample, defaults, nk, avg_jn_path, rebuild_avg_jn, save_avg_jn_path = config
     zeff = _get_covmat_param(block, defaults, "zeff")
     area_shape = _get_covmat_param(block, defaults, "area_shape")
     area_dens = _get_covmat_param(block, defaults, "area_dens")
@@ -100,9 +107,8 @@ def execute(block, config):
     nr = int(_get_covmat_param(block, defaults, "nr"))
     sigma_e = _get_covmat_param(block, defaults, "sigma_e")
 
-    rbins = np.logspace(np.log10(rmin), np.log10(rmax), nr)
-
     h0 = block["cosmological_parameters", "h0"]
+    rbins = np.logspace(np.log10(rmin), np.log10(rmax), nr) #Mpc
     Pimax = block["LOS_bin", "Pi_max"] / h0  # Mpc
 
     cosmo = Planck13.clone(H0=h0 * 100)
@@ -170,9 +176,12 @@ def execute(block, config):
         1e-3,
         kuse,
         nv=[0, 2, [0, 4]],
-        load_data=True,
-        path=(avg_jn_path or None),
+        load_data=(not rebuild_avg_jn),
+        path=(avg_jn_path or None) if (not rebuild_avg_jn) else None,
     )
+    if rebuild_avg_jn:
+        cache_path = save_avg_jn_path or avg_jn_path or DEFAULT_AVG_JN_PATH
+        cc.save_jn_data(file_path=_resolve_cache_path(cache_path))
     cc.set_power_and_w(omega_dens, omega_shape, zuse, Chi, W_ds, W_ss, W_dd, Pimax)
     
     cov_gpgp = cc.covariance_wgpwgp(pgg_nl, pii_nl, pgi_nl, Ng, Np)

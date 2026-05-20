@@ -3,13 +3,15 @@ import numpy as np
 from scipy.integrate import simpson
 from scipy.interpolate import interp1d
 from scipy.special import jn
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(MODULE_DIR, "..", ".."))
 DEFAULT_AVG_JN_PATH = os.path.join(
     os.environ.get("IA_LIB", REPO_ROOT), "output", "avg_jn"
 )
+MAX_BESSEL_CHUNK_ELEMENTS = 2_000_000
+MAX_BESSEL_WORKERS = 1
 
 #############################################################################################################################################
 #############################################################################################################################################
@@ -140,45 +142,123 @@ class Compute_covmat:
             )
         print("Finished...")
 
+    def _bin_r_samples(self, bin_index):
+        if self.rbins[bin_index + 1] < 1:
+            return np.arange(self.rbins[bin_index], self.rbins[bin_index + 1], self.res / 5)
+        return np.arange(self.rbins[bin_index], self.rbins[bin_index + 1], self.res)
+
+    def _compute_avg_jn_bin(self, bin_index, unique_orders, requests):
+        ruse = self._bin_r_samples(bin_index)
+        weight = 2 * np.pi * ruse
+        r_count = max(int(ruse.size), 1)
+        chunk_size = max(
+            1,
+            min(
+                self.k.size,
+                int(MAX_BESSEL_CHUNK_ELEMENTS // r_count),
+            ),
+        )
+
+        order_integrals = {
+            order: np.zeros_like(self.k, dtype=float) for order in unique_orders
+        }
+        for start in range(0, self.k.size, chunk_size):
+            stop = min(start + chunk_size, self.k.size)
+            kr = np.outer(self.k[start:stop], ruse)
+            for order in unique_orders:
+                order_integrals[order][start:stop] = simpson(
+                    weight * jn(order, kr),
+                    x=ruse,
+                )
+
+        exact_area = np.pi * (np.max(ruse) ** 2 - np.min(ruse) ** 2)
+        weighted_area = simpson(weight, x=ruse)
+
+        results = {}
+        for key, orders, mode in requests:
+            numerator = np.zeros_like(self.k, dtype=float)
+            for order in orders:
+                numerator += order_integrals[order]
+            denominator = exact_area if mode == "single" else weighted_area
+            results[key] = numerator / denominator
+
+        return bin_index, results
+
     def set_jn_data(self):
         print("Compute Bessel function parallel...")
 
         if self.avg_jn:
-            tasks = []
-            keys = []
+            requests = []
+            unique_orders = []
+            seen_orders = set()
 
             for i in self.nv:
                 if isinstance(i, list):
                     print(i)
-                    tasks.append(("avg_jns", i))
-                    keys.append(str(i))
+                    orders = tuple(i)
+                    requests.append((str(i), orders, "sum"))
+                    for order in orders:
+                        if order not in seen_orders:
+                            seen_orders.add(order)
+                            unique_orders.append(order)
                 elif isinstance(i, int):
                     print(i)
-                    tasks.append(("avg_jn", i))
-                    keys.append(i)
+                    requests.append((i, (i,), "single"))
+                    if i not in seen_orders:
+                        seen_orders.add(i)
+                        unique_orders.append(i)
                 else:
                     self.rp[i], self.j[i] = 0, 0
 
-            if tasks:
-                max_workers = min(len(tasks), os.cpu_count())
-                with ProcessPoolExecutor(max_workers=max_workers) as executor:
-                    future_to_key = {}
-                    for task, key in zip(tasks, keys):
-                        if task[0] == "avg_jns":
-                            future = executor.submit(self.compute_avg_jns, task[1])
-                        else:
-                            future = executor.submit(self.compute_avg_jn, task[1])
-                        future_to_key[future] = key
+            if requests:
+                rnew = (self.rbins[:-1] + self.rbins[1:]) / 2
+                for key, _, _ in requests:
+                    self.rp[key] = rnew
+                    self.j[key] = {}
 
-                    for future in as_completed(future_to_key):
-                        key = future_to_key[future]
-                        try:
-                            rp_result, j_result = future.result()
-                            self.rp[key] = rp_result
-                            self.j[key] = j_result
-                        except Exception as exc:
-                            print(f"Task {key} generated an exception: {exc}")
-                            self.rp[key], self.j[key] = 0, 0
+                request_tuple = tuple(requests)
+                order_tuple = tuple(unique_orders)
+                bin_indices = range(len(self.rbins) - 1)
+                max_workers = min(
+                    len(self.rbins) - 1,
+                    os.cpu_count() or 1,
+                    MAX_BESSEL_WORKERS,
+                )
+                try:
+                    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                        future_to_bin = {
+                            executor.submit(
+                                self._compute_avg_jn_bin,
+                                bin_index,
+                                order_tuple,
+                                request_tuple,
+                            ): bin_index
+                            for bin_index in bin_indices
+                        }
+
+                        for future in as_completed(future_to_bin):
+                            try:
+                                bin_index, result_map = future.result()
+                                for key, values in result_map.items():
+                                    self.j[key][bin_index] = values
+                            except Exception as exc:
+                                bin_index = future_to_bin[future]
+                                raise RuntimeError(
+                                    f"Failed to compute averaged Bessel cache for bin {bin_index}"
+                                ) from exc
+                except Exception as exc:
+                    print(
+                        "Threaded Bessel-cache build failed; falling back to serial. "
+                        f"Reason: {exc}"
+                    )
+                    for bin_index in bin_indices:
+                        _, result_map = self._compute_avg_jn_bin(
+                            bin_index,
+                            order_tuple,
+                            request_tuple,
+                        )
+                        for key, values in result_map.items():
+                            self.j[key][bin_index] = values
         else:
             for i in self.nv:
                 if isinstance(i, int):
@@ -418,6 +498,54 @@ class Compute_covmat:
 
         return cov
 
+    def _covariance_from_spectral_term(
+        self,
+        left_key,
+        right_key,
+        w_left,
+        w_right,
+        omega_s,
+        spectral_term,
+    ):
+        self._require_projection_state()
+
+        spectral_term = np.asarray(spectral_term, dtype=float)
+        target_shape = (self.z.size, self.k.size)
+        if spectral_term.shape != target_shape:
+            try:
+                spectral_term = np.broadcast_to(spectral_term, target_shape)
+            except ValueError as exc:
+                raise ValueError(
+                    "Spectral term must have shape (%d, %d), got %s"
+                    % (self.z.size, self.k.size, spectral_term.shape)
+                ) from exc
+        if spectral_term.shape != target_shape:
+            raise ValueError(
+                "Spectral term must have shape (%d, %d), got %s"
+                % (self.z.size, self.k.size, spectral_term.shape)
+            )
+
+        z_prefactor = self._z_prefactor(
+            np.asarray(w_left, dtype=float),
+            np.asarray(w_right, dtype=float),
+            float(omega_s),
+        )
+
+        nbins = len(self.rbins) - 1
+        cov = np.zeros((nbins, nbins), dtype=float)
+
+        for i in range(nbins):
+            left_kernel = np.asarray(self.j[left_key][i], dtype=float)
+            for j in range(nbins):
+                right_kernel = np.asarray(self.j[right_key][j], dtype=float)
+                k_integrand = (self.k / (2 * np.pi)) * left_kernel * right_kernel
+                z_integrand = simpson(
+                    k_integrand[None, :] * spectral_term, x=self.k, axis=1
+                )
+                cov[i, j] = simpson(z_prefactor * z_integrand, x=self.z)
+
+        return cov
+
     def covariance_wgpwgp(self, pgg, pii, pgi, Ng=0, Np=0):
         return self._covariance_block(
             2,
@@ -432,6 +560,47 @@ class Compute_covmat:
             n_ag=Ng,
             n_be=Np,
         )
+
+    def covariance_wgpwgp_component(self, pgg, pii, pgi, Ng=0, Np=0):
+        pgg = self._prepare_power(pgg)
+        pii = self._prepare_power(pii)
+        pgi = self._prepare_power(pgi)
+        Ng = self._noise_matrix(Ng)
+        Np = self._noise_matrix(Np)
+
+        covc = self._covariance_from_spectral_term(
+            2,
+            2,
+            self.wds,
+            self.wds,
+            self.omega_s,
+            Ng * Np,
+        )
+        covpgi2 = self._covariance_from_spectral_term(
+            2,
+            2,
+            self.wds,
+            self.wds,
+            self.omega_s,
+            pgi * pgi,
+        )
+        covpggxc = self._covariance_from_spectral_term(
+            2,
+            2,
+            self.wds,
+            self.wds,
+            self.omega_s,
+            pgg * Np,
+        )
+        covpiixc = self._covariance_from_spectral_term(
+            2,
+            2,
+            self.wds,
+            self.wds,
+            self.omega_s,
+            pii * Ng,
+        )
+        return covc, covpgi2, covpggxc, covpiixc
 
     def covariance_wgpwpp(self, pgg, pii, pgi, Ng=0, Np=0):
         return self._covariance_block(
