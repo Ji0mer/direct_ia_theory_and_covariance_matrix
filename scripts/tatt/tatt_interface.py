@@ -107,7 +107,7 @@ def load_fastpt_terms(block, k_out, z_out, growth, sub_lowk):
         if not np.allclose(z_fastpt, z_out):
             raise ValueError(f"Expected fastpt z grid to match matter-power z grid for {key}")
 
-        if np.allclose(k_out, k_fastpt):
+        if k_out.shape == k_fastpt.shape and np.allclose(k_out, k_fastpt):
             terms[key] = power
             continue
 
