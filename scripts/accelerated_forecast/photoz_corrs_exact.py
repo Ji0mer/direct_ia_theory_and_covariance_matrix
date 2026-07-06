@@ -22,6 +22,7 @@ from cache_utils import (
 
 
 clight = 299792.4580
+PHOTOZ_KERNEL_VERSION = "sz_1plusz_v2"
 
 
 def gaussian_val(diff, sigma):
@@ -46,8 +47,8 @@ def setup(options):
             option_section, "shape_sample", default="forecast_sample_shape"
         ),
         "timing": options.get_bool(option_section, "timing", default=True),
-        "constant_sigmaz": options.get_bool(
-            option_section, "constant_sigmaz", default=True
+        "constant_sz": options.get_bool(
+            option_section, "constant_sz", default=True
         ),
         "n_pi": options.get_int(option_section, "N_pi", default=200),
         "pi_mask_max": options.get_double(
@@ -62,7 +63,7 @@ def setup(options):
     }
 
 
-def build_common_state(block, constant_sigmaz, n_pi, pi_mask_max):
+def build_common_state(block, constant_sz, n_pi, pi_mask_max):
     nz_low = 200
     z_low = np.linspace(0.01, 4.00, nz_low)
     zf = np.linspace(0.0, 4.0, 400)
@@ -76,7 +77,8 @@ def build_common_state(block, constant_sigmaz, n_pi, pi_mask_max):
     )
     chi = chi_of_z_spline(zf)
 
-    sigmaz = 0.01 if not constant_sigmaz else block["photoz_errors", "sigmaz"]
+    # photoz_errors/sz stores the coefficient in sigma_z = sz * (1 + z_center).
+    sz = 0.01 if not constant_sz else block["photoz_errors", "sz"]
 
     hz_all = 100.0 * np.sqrt(
         block["cosmological_parameters", "omega_m"] * (1 + z_low) ** 3
@@ -87,7 +89,8 @@ def build_common_state(block, constant_sigmaz, n_pi, pi_mask_max):
 
     zf_b = zf[None, None, :]
     diff1 = zf_b - z1_grid[:, :, None]
-    pz1_mat = gaussian_val(diff1, sigmaz)
+    sigma1 = sz * (1.0 + z1_grid)
+    pz1_mat = gaussian_val(diff1, sigma1[:, :, None])
     norm1 = np.trapz(pz1_mat, x=chi, axis=-1)
     norm1[norm1 == 0] = 1.0
     pz1_mat /= norm1[:, :, None]
@@ -95,7 +98,10 @@ def build_common_state(block, constant_sigmaz, n_pi, pi_mask_max):
     diff2 = zf_b - z2_grid[:, :, None]
     valid_mask = z2_grid >= 0
     pz2_mat = np.zeros_like(diff2)
-    pz2_mat[valid_mask, :] = gaussian_val(diff2[valid_mask, :], sigmaz)
+    sigma2 = sz * (1.0 + z2_grid)
+    pz2_mat[valid_mask, :] = gaussian_val(
+        diff2[valid_mask, :], sigma2[valid_mask, None]
+    )
     norm2 = np.trapz(pz2_mat, x=chi, axis=-1)
     norm2[norm2 == 0] = 1.0
     pz2_mat /= norm2[:, :, None]
@@ -187,7 +193,7 @@ def build_hankel_operator(ell, theta_values, corr_type):
 def build_cached_operators(block, config):
     state = build_common_state(
         block,
-        config["constant_sigmaz"],
+        config["constant_sz"],
         config["n_pi"],
         config["pi_mask_max"],
     )
@@ -283,13 +289,14 @@ def load_or_build_cache(block, config):
     cache_key = build_cache_key(
         [
             "photoz_corrs_exact",
+            PHOTOZ_KERNEL_VERSION,
             config["density_sample"],
             config["shape_sample"],
-            config["constant_sigmaz"],
+            config["constant_sz"],
             config["n_pi"],
             config["pi_mask_max"],
             block["LOS_bin", "Pi_max"],
-            block["photoz_errors", "sigmaz"] if config["constant_sigmaz"] else 0.01,
+            block["photoz_errors", "sz"] if config["constant_sz"] else 0.01,
             z_distance,
             chi_distance,
             get_nz_on_grid(block, config["density_sample"], zf),

@@ -33,6 +33,9 @@ from photoz_corrs_exact import (
 from tatt_interface import FASTPT_KEYS, PkInterp, compute_amplitudes, grow
 
 
+PHOTOZ_KERNEL_VERSION = "sz_1plusz_v2"
+
+
 GM_TERM_SPECS = (
     ("Pd1d1", "Pnl"),
     ("Pd1d2", "Pd1d2"),
@@ -102,8 +105,8 @@ def setup(options):
             option_section, "shape_sample", default="forecast_sample_shape"
         ),
         "timing": options.get_bool(option_section, "timing", default=True),
-        "constant_sigmaz": options.get_bool(
-            option_section, "constant_sigmaz", default=True
+        "constant_sz": options.get_bool(
+            option_section, "constant_sz", default=True
         ),
         "n_pi": options.get_int(option_section, "N_pi", default=200),
         "pi_mask_max": options.get_double(
@@ -143,13 +146,14 @@ def get_operator_cache_key_parts(block, config):
     )
     zf = np.linspace(0.0, 4.0, 400)
     return [
+        PHOTOZ_KERNEL_VERSION,
         config["density_sample"],
         config["shape_sample"],
-        config["constant_sigmaz"],
+        config["constant_sz"],
         config["n_pi"],
         config["pi_mask_max"],
         block["LOS_bin", "Pi_max"],
-        block["photoz_errors", "sigmaz"] if config["constant_sigmaz"] else 0.01,
+        block["photoz_errors", "sz"] if config["constant_sz"] else 0.01,
         z_distance,
         chi_distance,
         get_nz_on_grid(block, config["density_sample"], zf),

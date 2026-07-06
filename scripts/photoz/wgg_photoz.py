@@ -13,13 +13,13 @@ def setup(options):
     sample_a = options.get_string(option_section, "sample_a", default="forecast_sample_density")
     sample_b = options.get_string(option_section, "sample_b", default="forecast_sample_density")
     timing = options.get_bool(option_section, "timing", default=True)
-    constant_sigmaz = options.get_bool(option_section, "constant_sigmaz", default=True)
+    constant_sz = options.get_bool(option_section, "constant_sz", default=True)
     n_pi = options.get_int(option_section, "N_pi", default=200)
     pi_mask_max = options.get_double(option_section, "Pi_mask_max", default=-1.0)
-    return sample_a, sample_b, timing, constant_sigmaz, n_pi, pi_mask_max
+    return sample_a, sample_b, timing, constant_sz, n_pi, pi_mask_max
 
 def execute(block, config):
-    sample_a, sample_b, timing, constant_sigmaz, n_pi, pi_mask_max = config
+    sample_a, sample_b, timing, constant_sz, n_pi, pi_mask_max = config
     
     if timing:
         from time import time
@@ -39,12 +39,13 @@ def execute(block, config):
     chi = chi_of_z_spline(zf)
     
     # --- 2. Photo-z parameters ---
-    if not constant_sigmaz:
-        sigmaz_a = 0.01
-        sigmaz_b = 0.01
+    # photoz_errors/sz stores the coefficient in sigma_z = sz * (1 + z_center).
+    if not constant_sz:
+        sz_a = 0.01
+        sz_b = 0.01
     else:
-        sigmaz_a = block['photoz_errors','sigmaz']
-        sigmaz_b = block['photoz_errors','sigmaz']
+        sz_a = block['photoz_errors','sz']
+        sz_b = block['photoz_errors','sz']
         
     # --- 3. Power Spectrum Interpolation ---
     # Apply bias terms
@@ -88,7 +89,8 @@ def execute(block, config):
     
     # Pz1
     diff1 = zf_b - z1_grid[:, :, None]
-    Pz1_mat = gaussian_val(diff1, sigmaz_a)
+    sigma1 = sz_a * (1.0 + z1_grid)
+    Pz1_mat = gaussian_val(diff1, sigma1[:, :, None])
     norm1 = np.trapz(Pz1_mat, x=chi, axis=-1)
     norm1[norm1 == 0] = 1.0
     Pz1_mat /= norm1[:, :, None]
@@ -97,7 +99,10 @@ def execute(block, config):
     diff2 = zf_b - z2_grid[:, :, None]
     valid_mask = z2_grid >= 0
     Pz2_mat = np.zeros_like(diff2)
-    Pz2_mat[valid_mask, :] = gaussian_val(diff2[valid_mask, :], sigmaz_b)
+    sigma2 = sz_b * (1.0 + z2_grid)
+    Pz2_mat[valid_mask, :] = gaussian_val(
+        diff2[valid_mask, :], sigma2[valid_mask, None]
+    )
     norm2 = np.trapz(Pz2_mat, x=chi, axis=-1)
     norm2[norm2 == 0] = 1.0 
     Pz2_mat /= norm2[:, :, None]
